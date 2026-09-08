@@ -192,21 +192,32 @@ def screen_tiles(
     max_workers: int = 12,
     sample_px: int = 188,
     cache_path: Path | None = None,
+    check_blank: bool = False,
+    progress=None,
 ) -> dict[str, TileQuality]:
-    """Measure blank padding and road density over the network, cheaply.
+    """Rank tiles by road density, over the network, cheaply.
 
-    Large parts of this dataset are edge-of-coverage tiles that are mostly white
-    no-data. Mosaicking those produces a region that is largely blank, which
-    wastes inference and makes the output look broken. GDAL's /vsicurl reader
-    plus a downsampled read lets us check a tile for a few hundred KB instead of
-    the ~9 MB the full tile costs.
+    Only the label rasters are read, and they are fetched with a plain HTTP GET
+    rather than through GDAL's /vsicurl. That is not a micro-optimisation:
+    measured over 24 tiles, /vsicurl costs 14.5 s per tile against 0.64 s for a
+    direct GET -- 23x -- because it issues a HEAD plus ranged reads to probe a
+    file that is only 6-10 KB in the first place (a road mask is almost all
+    zeros, so it compresses away to nothing).
 
-    Screening several hundred tiles still costs minutes of network time, so
-    results are cached to ``cache_path`` and only unseen tiles are fetched. That
-    keeps an interactive region picker responsive and makes an interrupted scan
-    resumable rather than wasted.
+    ``check_blank`` reads the satellite tile too, and is off by default because
+    it is ~1000x more expensive: the satellite tiles are 6.6 MB, carry no
+    internal overviews, and are striped one row per block, so a downsampled
+    /vsicurl read still has to pull essentially the whole file. Screening a few
+    hundred tiles that way means gigabytes of traffic. Blankness is instead
+    measured by :func:`measure_blank` after a block is downloaded, where the
+    pixels are already local and the check is free.
+
+    Results are cached to ``cache_path``, so an interrupted scan resumes rather
+    than refetching.
     """
+    import io
     import json
+    import warnings
 
     import rasterio
     from rasterio.enums import Resampling
@@ -231,31 +242,44 @@ def screen_tiles(
     def one(ref: TileRef) -> TileQuality:
         q = TileQuality(name=ref.name)
         shape = (sample_px, sample_px)
+        if check_blank:
+            try:
+                with rasterio.open(f"/vsicurl/{ref.sat_url}") as ds:
+                    bands = min(3, ds.count)
+                    arr = ds.read(
+                        list(range(1, bands + 1)),
+                        out_shape=(bands, *shape),
+                        resampling=Resampling.average,
+                    )
+                q.blank_fraction = float((arr.min(axis=0) >= 248).mean())
+            except Exception as exc:
+                q.error = f"image: {exc}"
+                return q
         try:
-            with rasterio.open(f"/vsicurl/{ref.sat_url}") as ds:
-                bands = min(3, ds.count)
-                arr = ds.read(
-                    list(range(1, bands + 1)),
-                    out_shape=(bands, *shape),
-                    resampling=Resampling.average,
-                )
-            q.blank_fraction = float((arr.min(axis=0) >= 248).mean())
-        except Exception as exc:
-            q.error = f"image: {exc}"
-            return q
-        try:
-            with rasterio.open(f"/vsicurl/{ref.map_url}") as ds:
-                lbl = ds.read(1, out_shape=(1, *shape),
-                              resampling=Resampling.average)
+            resp = client.get(ref.map_url)
+            resp.raise_for_status()
+            with warnings.catch_warnings():
+                # the label rasters carry no CRS of their own; georeferencing
+                # comes from the matching satellite tile
+                warnings.simplefilter("ignore")
+                with rasterio.open(io.BytesIO(resp.content)) as ds:
+                    lbl = ds.read(1, out_shape=(1, *shape),
+                                  resampling=Resampling.average)
             q.road_fraction = float((lbl > 127).mean())
         except Exception as exc:
             q.error = f"label: {exc}"
         return q
 
     if todo:
-        with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            for q in pool.map(one, todo):
-                cached[q.name] = q
+        limits = httpx.Limits(max_connections=max_workers,
+                              max_keepalive_connections=max_workers)
+        with httpx.Client(timeout=60.0, follow_redirects=True,
+                          limits=limits) as client:
+            with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                for q in pool.map(one, todo):
+                    cached[q.name] = q
+                    if progress:
+                        progress(len(cached), len(todo), q)
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {n: q.to_dict() for n, q in cached.items()}
@@ -265,6 +289,26 @@ def screen_tiles(
 
     wanted = {r.name for r in refs}
     return {n: q for n, q in cached.items() if n in wanted}
+
+
+def measure_blank(path: Path, sample_px: int = 256) -> float:
+    """Fraction of a downloaded tile that is white no-data padding.
+
+    Cheap, because the file is already local. Run this after downloading a
+    block: tiles at the edge of the survey area are largely blank, and
+    mosaicking those wastes inference on nothing.
+    """
+    import rasterio
+    from rasterio.enums import Resampling
+
+    with rasterio.open(path) as ds:
+        bands = min(3, ds.count)
+        arr = ds.read(
+            list(range(1, bands + 1)),
+            out_shape=(bands, sample_px, sample_px),
+            resampling=Resampling.average,
+        )
+    return float((arr.min(axis=0) >= 248).mean())
 
 
 def find_best_block(
@@ -316,6 +360,8 @@ def find_best_block(
         qs = [quality.get(t.name) for t in blk]
         if any(q is None or not q.usable for q in qs):
             continue
+        # blank_fraction is 0.0 unless screening was asked to fetch imagery;
+        # the real blank check happens after download, in measure_blank()
         if max(q.blank_fraction for q in qs) > max_blank:
             continue
         mean_road = sum(q.road_fraction for q in qs) / len(qs)
@@ -327,6 +373,60 @@ def find_best_block(
         return find_contiguous_block(refs, size, size), quality
     scored.sort(key=lambda x: -x[0])
     return scored[0][1], quality
+
+
+def rank_blocks(
+    refs: list[TileRef],
+    size: int = 2,
+    *,
+    min_road: float = 0.004,
+    search_limit: int = 400,
+    cache_path: Path | None = None,
+) -> tuple[list[tuple[float, list[TileRef]]], dict[str, TileQuality]]:
+    """All candidate blocks, densest first, so a caller can fall through.
+
+    Returned as (mean_road_fraction, tiles). Blank tiles cannot be detected
+    without downloading, so callers should verify the top choice with
+    :func:`measure_blank` and move to the next entry if it is mostly no-data.
+    """
+    by_key = {(r.key_e, r.key_n): r for r in refs}
+    anchors: list[list[TileRef]] = []
+    for r in sorted(refs, key=lambda r: (-r.key_n, r.key_e)):
+        block: list[TileRef] = []
+        ok = True
+        for dr in range(size):
+            for dc in range(size):
+                found = by_key.get(
+                    (r.key_e + dc * GRID_STEP, r.key_n - dr * GRID_STEP)
+                )
+                if found is None:
+                    ok = False
+                    break
+                block.append(found)
+            if not ok:
+                break
+        if ok and block:
+            anchors.append(block)
+        if len(anchors) >= search_limit:
+            break
+
+    if not anchors:
+        return [], {}
+
+    unique = {t.name: t for blk in anchors for t in blk}
+    quality = screen_tiles(list(unique.values()), cache_path=cache_path)
+
+    scored = []
+    for blk in anchors:
+        qs = [quality.get(t.name) for t in blk]
+        if any(q is None or not q.usable for q in qs):
+            continue
+        mean_road = sum(q.road_fraction for q in qs) / len(qs)
+        if mean_road < min_road:
+            continue
+        scored.append((mean_road, blk))
+    scored.sort(key=lambda x: -x[0])
+    return scored, quality
 
 
 @dataclass
