@@ -24,7 +24,7 @@ score, and a live view of every decision it made getting there.
 - [Results, and where it falls down](#results-and-where-it-falls-down)
 - [Docker](#docker)
 - [Project layout](#project-layout)
-- [Branches](#branches)
+- [The supervised backend](#the-supervised-backend)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -188,7 +188,9 @@ Leaflet is vendored locally — no CDN, no Node, no build step.
 | `gisagent doctor` | verify GPU, QGIS, SAM 3 access and LLM tool calling |
 | `gisagent regions` | rank contiguous tile blocks by road density |
 | `gisagent build <tiles...>` | download tiles and mosaic them into a job |
-| `gisagent run <job-id>` | full pipeline with metrics |
+| `gisagent run <job-id>` | full pipeline with metrics; `--model sam3\|unet` |
+| `gisagent train` | train the U-Net on Massachusetts Roads labels |
+| `gisagent benchmark <jobs...>` | score backends against each other |
 | `gisagent jobs` | list jobs, newest first |
 | `gisagent serve` | run the web app |
 | `gisagent mcp` | expose the 16 MCP tools on stdio, for an external client |
@@ -243,7 +245,7 @@ Other limits worth knowing:
   same pipeline but cannot be scored.
 
 A supervised model trained on this dataset addresses the urban failure directly —
-see [Branches](#branches).
+see [the supervised backend](#the-supervised-backend) below.
 
 ---
 
@@ -284,33 +286,115 @@ Run the tests with `uv run pytest` (55 tests, no network or GPU required).
 
 ---
 
-## Branches
+## The supervised backend
 
-| branch | contents |
-| --- | --- |
-| `main` | the zero-shot SAM 3 agentic application — what this README describes |
-| `supervised-unet` | a U-Net trained on the Massachusetts Roads labels, as a second backend, plus its training pipeline and a `benchmark` command |
+> You are on **`supervised-unet`**. `main` is the zero-shot SAM 3 application;
+> the repository includes a segmentation backend trained on the dataset's own
+> labels, plus the training pipeline and a `benchmark` command.
 
-`supervised-unet` exists because of the urban failure above. It is a small
-ResNet-34 U-Net (24 M params) trained from scratch on the dataset's own labels,
-not a fine-tune of SAM 3 — fine-tuning a 0.9 B gated model on 8 GB VRAM isn't
-practical, and it wouldn't address the failure mode. It implements the same
-interface, so `run --model unet` swaps it in and everything downstream is
-unchanged.
+### Why
 
-**It works.** Ten minutes of training on 135 tiles, scored on the same two
-regions with the same pipeline:
+The urban failure above is not a tuning problem. SAM 3 is a *concept* model: it
+was never shown what a road looks like from 400 m up, and a narrow shadowed
+street between rooftops does not read as one. The Massachusetts Roads dataset
+contains exactly that supervision — 1,171 tiles of labelled roads at 1 m/px — so
+the fix is to use it.
 
-| region | model | IoU | F1 | recall |
-| --- | --- | --- | --- | --- |
-| Andover (suburban) | sam3 | 0.455 | 0.626 | 0.844 |
-| Andover (suburban) | **unet** | **0.581** | **0.735** | 0.860 |
-| Boston (urban) | sam3 | 0.098 | 0.178 | 0.108 |
-| Boston (urban) | **unet** | **0.453** | **0.624** | **0.627** |
+### Not a SAM 3 fine-tune
 
-Urban IoU improves 4.6× and recall 5.8×, and suburban improves too — so it is
-not a trade of one case for the other. Check out that branch for the training
-pipeline and the full comparison.
+This trains a **ResNet-34 U-Net (24 M params) from scratch** (ImageNet encoder),
+not a fine-tune of SAM 3. Two reasons:
+
+1. SAM 3 is 0.9 B parameters. Fine-tuning it needs far more than 8 GB of VRAM.
+2. It wouldn't help as much. The failure is that the model doesn't know what an
+   aerial road is — a small model learning that from scratch on 160 tiles is a
+   better use of the same GPU-hour.
+
+### Train one
+
+```bash
+uv run gisagent train --tiles 160 --epochs 14
+```
+
+This downloads a curated training set (~1.4 GB), trains, and writes
+`models/unet_roads.pt` plus a `train_report.json`. Tiles are chosen from the
+screening cache to span the useful road-density range — tiles with almost no
+road cost disk without teaching anything, and downtown blocks where the labels
+paint wide swathes skew the model towards predicting road everywhere.
+
+Two details in the data pipeline matter more than they look:
+
+- **Crops are biased towards windows containing road.** Roads are a few percent
+  of pixels, so uniformly random crops are mostly empty and the model learns to
+  predict background everywhere.
+- **Blank-heavy crops are rejected.** Many tiles are edge-of-coverage and carry
+  white no-data padding; training on it teaches that white means background.
+
+Reuse an existing download with `--skip-fetch`.
+
+### Use it
+
+```bash
+uv run gisagent run <job-id> --model unet
+```
+
+`UNetRoadSegmenter` implements the same interface as `Sam3RoadSegmenter`, so the
+pipeline, the MCP tools and the web app are all unchanged by the choice. Two
+honest differences, both inherent to a supervised model:
+
+- `prompt` is accepted and **ignored** — there is no text conditioning.
+- `n_instances` is 1 when anything is found. This is semantic, not instance,
+  segmentation.
+
+### Compare them
+
+```bash
+uv run gisagent benchmark <suburban-job> <urban-job> --models sam3,unet
+```
+
+Segments, stitches and scores each backend on each job, then prints them side by
+side. It skips vectorising, which costs time without changing the pixel metrics
+under comparison.
+
+### Measured result
+
+![SAM 3 vs U-Net on Boston Back Bay](docs/compare_urban.png)
+
+Same regions, same pipeline, same threshold — only the backend differs. Trained
+for 9.9 minutes on 135 tiles on an RTX 5050 (val IoU 0.608 at epoch 13).
+
+| region | road % | model | IoU | F1 | precision | recall | relaxed F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Andover (suburban) | 1.1 | sam3 | 0.455 | 0.626 | 0.497 | 0.844 | 0.822 |
+| Andover (suburban) | 1.1 | **unet** | **0.581** | **0.735** | 0.642 | 0.860 | 0.857 |
+| Boston (urban) | 15.9 | sam3 | 0.098 | 0.178 | 0.511 | 0.108 | 0.217 |
+| Boston (urban) | 15.9 | **unet** | **0.453** | **0.624** | 0.621 | **0.627** | 0.791 |
+
+The urban case is where it matters: **IoU 4.6×, recall 5.8×**. In vector terms
+the same region goes from 149 centrelines totalling 13.3 km to 2,061 totalling
+162.9 km — SAM 3 was finding the arterials and almost none of the grid.
+
+Suburban improves too (+28 % IoU), so this is not a trade of one case for the
+other. Precision is the axis that gains most (0.497 → 0.642): a supervised model
+has actually learned that a parking lot is not a road, which no amount of prompt
+wording teaches a concept model.
+
+Worth being clear about what this is not: 135 tiles and ten minutes is a small
+model on a small budget. Published work on this dataset reaches higher. The
+point here is that the *failure mode is fixable with supervision*, and that
+swapping backends changes nothing else in the system.
+
+### Supervised-backend layout
+
+```
+src/gisagent/train/
+  fetch.py     choose and download a training set from the density cache
+  data.py      road-biased random crops, blank rejection, augmentation
+  loop.py      BCE + Dice, AMP, cosine schedule, best-IoU checkpointing
+src/gisagent/segment/
+  unet.py      sliding-window inference with a cosine taper
+  __init__.py  make_segmenter("sam3" | "unet")
+```
 
 ---
 

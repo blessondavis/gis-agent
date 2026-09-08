@@ -249,6 +249,115 @@ def run_pipeline(
 
 
 @app.command()
+def train(
+    tiles: int = typer.Option(160, help="tiles to train on (~9 MB each)"),
+    epochs: int = typer.Option(12),
+    crop: int = typer.Option(512),
+    batch_size: int = typer.Option(8),
+    steps: int = typer.Option(250, help="optimiser steps per epoch"),
+    encoder: str = typer.Option("resnet34"),
+    lr: float = typer.Option(3e-4),
+    data_dir: str = typer.Option("data/train_set"),
+    out_dir: str = typer.Option("models"),
+    skip_fetch: bool = typer.Option(False, help="reuse tiles already on disk"),
+) -> None:
+    """Train a U-Net road segmenter on the Massachusetts Roads labels."""
+    from gisagent.train.fetch import fetch_training_set
+    from gisagent.train.loop import TrainConfig, train as run_train
+
+    settings = get_settings()
+    data = Path(data_dir)
+
+    if not skip_fetch:
+        with console.status(f"assembling a {tiles}-tile training set..."):
+            rep = fetch_training_set(
+                data, n=tiles,
+                cache_path=settings.cache_dir / "tile_quality.json",
+            )
+        console.print(rep.to_dict())
+
+    cfg = TrainConfig(encoder=encoder, crop=crop, batch_size=batch_size,
+                      epochs=epochs, steps_per_epoch=steps, lr=lr)
+
+    table = Table("ep", "loss", "val IoU", "val F1", "prec", "rec", "s")
+
+    def on_epoch(row) -> None:
+        mark = " *" if row.best else ""
+        console.print(
+            f"  epoch {row.epoch:>2}  loss {row.train_loss:.4f}  "
+            f"IoU {row.val_iou:.4f}  F1 {row.val_f1:.4f}  "
+            f"P {row.val_precision:.3f}  R {row.val_recall:.3f}  "
+            f"{row.seconds:.0f}s{mark}",
+            highlight=False,
+        )
+        table.add_row(str(row.epoch), f"{row.train_loss:.4f}",
+                      f"{row.val_iou:.4f}", f"{row.val_f1:.4f}",
+                      f"{row.val_precision:.3f}", f"{row.val_recall:.3f}",
+                      f"{row.seconds:.0f}")
+
+    report = run_train(data / "sat", data / "map", Path(out_dir), cfg,
+                       progress=on_epoch)
+
+    console.print(table)
+    console.print(
+        f"\n[green]best val IoU {report.best_iou:.4f}[/] at epoch "
+        f"{report.best_epoch}  ->  {report.checkpoint}"
+    )
+    console.print(f"trained on {report.n_train_tiles} tiles, "
+                  f"validated on {report.n_val_tiles}, "
+                  f"{report.total_seconds/60:.1f} min")
+
+
+@app.command()
+def benchmark(
+    job_ids: list[str] = typer.Argument(..., help="jobs to score"),
+    models: str = typer.Option("sam3,unet", help="comma-separated backends"),
+    prompt: str = typer.Option("road network", help="sam3 only"),
+    threshold: float = typer.Option(0.4),
+    upscale: int = typer.Option(1),
+    checkpoint: str = typer.Option("", help="unet checkpoint path"),
+) -> None:
+    """Score each backend on each job and print them side by side.
+
+    Segments, stitches and evaluates only -- vectorising adds time without
+    changing the pixel metrics being compared.
+    """
+    from gisagent.pipeline import get_job
+    from gisagent.segment import make_segmenter
+
+    backends = [m.strip() for m in models.split(",") if m.strip()]
+    rows: list[tuple] = []
+
+    for backend in backends:
+        kwargs = {"checkpoint": checkpoint} if (backend == "unet" and checkpoint) else {}
+        segmenter = make_segmenter(backend, **kwargs)
+        for job_id in job_ids:
+            job = get_job(job_id)
+            if not job.has_truth():
+                console.print(f"[yellow]{job_id}: no ground truth, skipping[/]")
+                continue
+            name = job.manifest.get("name", job_id)
+            console.print(f"  {backend} on {name}...")
+            job.segment(segmenter, prompt=prompt, threshold=threshold,
+                        upscale=upscale)
+            job.stitch(threshold=threshold)
+            m = job.evaluate()
+            truth = (job.manifest.get("region") or {}).get("truth_fraction", 0.0)
+            rows.append((name, truth, backend, m))
+        if hasattr(segmenter, "unload"):
+            segmenter.unload()
+
+    table = Table("region", "road %", "model", "IoU", "F1", "precision",
+                  "recall", "relaxed F1", title="road extraction, strict vs relaxed")
+    for name, truth, backend, m in rows:
+        table.add_row(name, f"{truth*100:.1f}", backend,
+                      f"{m['iou']:.3f}", f"{m['f1']:.3f}",
+                      f"{m['precision']:.3f}", f"{m['recall']:.3f}",
+                      f"{m['relaxed_f1']:.3f}")
+    console.print(table)
+
+
+@app.command()
 def jobs() -> None:
     """List jobs, newest first."""
     from gisagent.pipeline import list_jobs
