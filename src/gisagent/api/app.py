@@ -193,38 +193,62 @@ def _finish_job(job, names: list[str], split: str) -> dict:
 @app.post("/api/jobs")
 async def create_job(req: CreateJobRequest) -> dict:
     from gisagent.dataset.mass_roads import (
-        TileRef, decode_name, download_tiles, find_best_block,
-        find_contiguous_block, list_split,
+        TileRef, decode_name, download_tiles, find_contiguous_block,
+        list_split, measure_blank, rank_blocks,
     )
     from gisagent.raster.georef import georeference_labels
 
     settings = get_settings()
+    MAX_BLANK = 0.12
+    MAX_ATTEMPTS = 5
 
-    def _work() -> dict:
-        names = req.tile_names
-        quality = {}
-        if not names:
-            refs_all = list_split(req.split)
-            if req.screen and req.block > 1:
-                block, quality = find_best_block(
-                    refs_all, req.block, max_blank=0.12, min_road=0.006,
-                    search_limit=60,
-                )
-            else:
-                block = find_contiguous_block(refs_all, req.block, req.block)
-            if not block:
-                raise HTTPException(400, "no suitable block found")
-            names = [r.name for r in block]
-
-        refs = []
-        for n in names:
-            e, k = decode_name(n)
-            refs.append(TileRef(name=n, split=req.split, key_e=e, key_n=k))
-
+    def _download(refs):
         results = download_tiles(refs, settings.raw_dir)
         failed = [r.ref.name for r in results if not r.ok]
         if failed:
             raise HTTPException(502, f"tile download failed: {failed}")
+        return results
+
+    def _work() -> dict:
+        names = req.tile_names
+        quality: dict = {}
+
+        if names:
+            refs = [
+                TileRef(name=n, split=req.split, key_e=decode_name(n)[0],
+                        key_n=decode_name(n)[1])
+                for n in names
+            ]
+            _download(refs)
+        else:
+            refs_all = list_split(req.split)
+            if req.screen and req.block > 1:
+                # Screening ranks on road density only; blankness cannot be
+                # measured without the pixels, so walk the ranked candidates
+                # and reject no-data blocks once their tiles are local.
+                cache = settings.cache_dir / "tile_quality.json"
+                scored, quality = rank_blocks(
+                    refs_all, req.block, min_road=0.006,
+                    search_limit=400, cache_path=cache,
+                )
+                if not scored:
+                    raise HTTPException(400, "no suitable block found")
+                for _road, block in scored[:MAX_ATTEMPTS]:
+                    results = _download(block)
+                    if max(measure_blank(r.image_path) for r in results) <= MAX_BLANK:
+                        break
+                else:
+                    raise HTTPException(
+                        400,
+                        f"top {MAX_ATTEMPTS} candidate blocks were mostly no-data",
+                    )
+            else:
+                block = find_contiguous_block(refs_all, req.block, req.block)
+                if not block:
+                    raise HTTPException(400, "no suitable block found")
+                _download(block)
+            names = [r.name for r in block]
+
         georeference_labels(settings.raw_dir / "sat", settings.raw_dir / "map")
 
         job = pipeline.new_job(req.name or f"{req.split} x{len(names)}")
