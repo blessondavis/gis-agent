@@ -188,7 +188,9 @@ Leaflet is vendored locally — no CDN, no Node, no build step.
 | `gisagent doctor` | verify GPU, QGIS, SAM 3 access and LLM tool calling |
 | `gisagent regions` | rank contiguous tile blocks by road density |
 | `gisagent build <tiles...>` | download tiles and mosaic them into a job |
-| `gisagent run <job-id>` | full pipeline with metrics |
+| `gisagent run <job-id>` | full pipeline with metrics; `--model sam3\|unet` |
+| `gisagent train` | train the U-Net on Massachusetts Roads labels |
+| `gisagent benchmark <jobs...>` | score backends against each other |
 | `gisagent jobs` | list jobs, newest first |
 | `gisagent serve` | run the web app |
 | `gisagent mcp` | expose the 16 MCP tools on stdio, for an external client |
