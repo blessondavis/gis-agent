@@ -207,19 +207,15 @@ def run_pipeline(
     upscale: int = typer.Option(1, help="upsample chips before inference"),
     chip_size: int = typer.Option(1024),
     overlap: int = typer.Option(128),
-    model: str = typer.Option("sam3", help="sam3 (zero-shot) | unet (trained)"),
-    checkpoint: str = typer.Option("", help="unet checkpoint path"),
 ) -> None:
     """Run tile -> segment -> stitch -> vectorize -> evaluate on a job."""
     from gisagent.pipeline import get_job
-    from gisagent.segment import make_segmenter
+    from gisagent.segment.sam3 import Sam3RoadSegmenter
 
     job = get_job(job_id)
     console.print(job.tile(chip_size=chip_size, overlap=overlap))
 
-    kwargs = {"checkpoint": checkpoint} if (model == "unet" and checkpoint) else {}
-    segmenter = make_segmenter(model, **kwargs)
-    console.print(f"backend: [bold]{model}[/]")
+    segmenter = Sam3RoadSegmenter()
 
     # No console.status() spinner around this: its background render thread
     # segfaults the interpreter when CUDA work runs underneath it on Windows.
@@ -250,66 +246,6 @@ def run_pipeline(
         table.add_row("iou", f"{metrics['iou']:.3f}", "")
         console.print(table)
     console.print(f"[green]vectors:[/] {job.vector_path}")
-
-
-@app.command()
-def train(
-    tiles: int = typer.Option(160, help="tiles to train on (~9 MB each)"),
-    epochs: int = typer.Option(12),
-    crop: int = typer.Option(512),
-    batch_size: int = typer.Option(8),
-    steps: int = typer.Option(250, help="optimiser steps per epoch"),
-    encoder: str = typer.Option("resnet34"),
-    lr: float = typer.Option(3e-4),
-    data_dir: str = typer.Option("data/train_set"),
-    out_dir: str = typer.Option("models"),
-    skip_fetch: bool = typer.Option(False, help="reuse tiles already on disk"),
-) -> None:
-    """Train a U-Net road segmenter on the Massachusetts Roads labels."""
-    from gisagent.train.fetch import fetch_training_set
-    from gisagent.train.loop import TrainConfig, train as run_train
-
-    settings = get_settings()
-    data = Path(data_dir)
-
-    if not skip_fetch:
-        with console.status(f"assembling a {tiles}-tile training set..."):
-            rep = fetch_training_set(
-                data, n=tiles,
-                cache_path=settings.cache_dir / "tile_quality.json",
-            )
-        console.print(rep.to_dict())
-
-    cfg = TrainConfig(encoder=encoder, crop=crop, batch_size=batch_size,
-                      epochs=epochs, steps_per_epoch=steps, lr=lr)
-
-    table = Table("ep", "loss", "val IoU", "val F1", "prec", "rec", "s")
-
-    def on_epoch(row) -> None:
-        mark = " *" if row.best else ""
-        console.print(
-            f"  epoch {row.epoch:>2}  loss {row.train_loss:.4f}  "
-            f"IoU {row.val_iou:.4f}  F1 {row.val_f1:.4f}  "
-            f"P {row.val_precision:.3f}  R {row.val_recall:.3f}  "
-            f"{row.seconds:.0f}s{mark}",
-            highlight=False,
-        )
-        table.add_row(str(row.epoch), f"{row.train_loss:.4f}",
-                      f"{row.val_iou:.4f}", f"{row.val_f1:.4f}",
-                      f"{row.val_precision:.3f}", f"{row.val_recall:.3f}",
-                      f"{row.seconds:.0f}")
-
-    report = run_train(data / "sat", data / "map", Path(out_dir), cfg,
-                       progress=on_epoch)
-
-    console.print(table)
-    console.print(
-        f"\n[green]best val IoU {report.best_iou:.4f}[/] at epoch "
-        f"{report.best_epoch}  ->  {report.checkpoint}"
-    )
-    console.print(f"trained on {report.n_train_tiles} tiles, "
-                  f"validated on {report.n_val_tiles}, "
-                  f"{report.total_seconds/60:.1f} min")
 
 
 @app.command()

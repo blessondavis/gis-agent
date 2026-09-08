@@ -36,10 +36,6 @@ LAZY_IMPORTS = [
     ("gisagent.dataset.mass_roads", "decode_name"),
     ("gisagent.dataset.mass_roads", "TileRef"),
     ("gisagent.mcp_servers.roads_server", "mcp"),
-    ("gisagent.segment", "make_segmenter"),
-    ("gisagent.segment.unet", "UNetRoadSegmenter"),
-    ("gisagent.train.fetch", "fetch_training_set"),
-    ("gisagent.train.loop", "TrainConfig"),
 ]
 
 
@@ -61,14 +57,12 @@ def test_qgis_version_is_a_method_not_a_module_function():
 def test_help_lists_every_command():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("doctor", "regions", "build", "run", "train", "jobs",
-                    "serve", "mcp"):
+    for command in ("doctor", "regions", "build", "run", "jobs", "serve", "mcp"):
         assert command in result.stdout
 
 
 @pytest.mark.parametrize(
-    "command",
-    ["doctor", "regions", "build", "run", "train", "jobs", "serve", "mcp"],
+    "command", ["doctor", "regions", "build", "run", "jobs", "serve", "mcp"]
 )
 def test_each_command_has_help(command):
     result = runner.invoke(app, [command, "--help"])

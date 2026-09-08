@@ -27,6 +27,3 @@ Thumbs.db
 
 # runtime logs
 *.log
-
-# trained model checkpoints (large, regenerable)
-models/
