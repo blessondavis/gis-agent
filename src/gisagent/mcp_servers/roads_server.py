@@ -30,25 +30,54 @@ from gisagent.config import get_settings
 mcp = MCPServer(
     name="gisagent-roads",
     instructions=(
-        "Tools for annotating roads on satellite imagery. A typical loop is: "
-        "create_region_job -> tile_region -> segment_chips -> stitch_result -> "
-        "evaluate_result. If the score is poor, change the segmentation prompt "
-        "or threshold and segment again, then re-evaluate. Finish with "
-        "vectorize_result to produce road centrelines."
+        "Tools for annotating roads on satellite imagery.\n\n"
+        "Core loop: create_region_job -> tile_region -> segment_chips -> "
+        "stitch_result -> vectorize_result.\n\n"
+        "How you judge the result depends on whether the imagery is labelled.\n"
+        "WITH ground truth, use evaluate_result for IoU and F1.\n"
+        "WITHOUT ground truth - the normal case for real work - use "
+        "critique_annotation and check_topology together. They fail in "
+        "different directions: the vision critic sees missing roads and roads "
+        "drawn over buildings but is blind to a uniform positional shift, "
+        "while topology sees fragmentation and misregistration but cannot "
+        "tell a road from a river. Trust agreement; when they disagree, say so "
+        "rather than picking one.\n\n"
+        "If quality is poor: change the threshold or re-run the weak area with "
+        "refine_area, then re-check. If the centrelines are broken rather than "
+        "wrong, repair_geometry is usually the cheaper fix - it reports the "
+        "topology before and after, so verify it actually improved things "
+        "instead of assuming."
     ),
 )
 
 _segmenter = None
 
 
-def _get_segmenter():
+_critic = None
+
+
+def _get_segmenter(backend: str | None = None):
     """One model instance per server process; loading it costs seconds and VRAM."""
     global _segmenter
-    if _segmenter is None:
-        from gisagent.segment.sam3 import Sam3RoadSegmenter
+    want = (backend or get_settings().segment_backend or "unet").lower()
+    if _segmenter is None or getattr(_segmenter, "_backend_name", None) != want:
+        from gisagent.segment import make_segmenter
 
-        _segmenter = Sam3RoadSegmenter()
+        kwargs = {}
+        if want == "unet":
+            kwargs["checkpoint"] = get_settings().unet_checkpoint
+        _segmenter = make_segmenter(want, **kwargs)
+        _segmenter._backend_name = want
     return _segmenter
+
+
+def _get_critic():
+    global _critic
+    if _critic is None:
+        from gisagent.critic.vlm import RoadCritic
+
+        _critic = RoadCritic()
+    return _critic
 
 
 def _ok(**kw) -> dict:
@@ -534,6 +563,178 @@ def run_qgis_algorithm(algorithm: str, params_json: str = "{}",
         return _err(str(exc))
     except Exception as exc:
         return _err(f"unexpected failure: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# Quality signals that need no ground truth.
+#
+# The point of these two is unlabelled imagery. With labels you can measure IoU
+# and stop when it is good enough; without them something else has to say
+# whether the annotation is finished. Neither is sufficient alone, and they fail
+# in different directions, which is why both are exposed:
+#
+#   critique_annotation  sees missing roads and roads drawn over buildings,
+#                        but is blind to a uniform positional shift
+#   check_topology       sees fragmentation, spurs and misregistration,
+#                        but cannot tell a road from a river
+#
+# When they disagree, that disagreement is the thing worth showing a human.
+# --------------------------------------------------------------------------- #
+
+
+@mcp.tool(
+    description=(
+        "Ask a vision model how good the current annotation looks, WITHOUT "
+        "ground truth. Returns completeness, correctness and an overall score "
+        "0-100 plus specific problems. Use this on unlabelled imagery where "
+        "evaluate_result cannot be used. Optionally restrict to a window. "
+        "Note: it cannot detect a uniform positional offset - pair it with "
+        "check_topology."
+    )
+)
+def critique_annotation(
+    job_id: str, window: list[int] | None = None, question: str = ""
+) -> dict:
+    import rasterio
+    from rasterio.windows import Window
+
+    try:
+        job = pipeline.get_job(job_id)
+    except FileNotFoundError as exc:
+        return _err(str(exc))
+    if not job.mask_path.exists():
+        return _err("no mask yet - run segment_chips and stitch_result first")
+
+    try:
+        with rasterio.open(job.image_path) as src:
+            full_w, full_h = src.width, src.height
+            if window and len(window) == 4:
+                col, row, w, h = (int(v) for v in window)
+                w = max(32, min(w, full_w - col))
+                h = max(32, min(h, full_h - row))
+                win = Window(col, row, w, h)
+            else:
+                win = None
+                col = row = 0
+                w, h = full_w, full_h
+            rgb = src.read([1, 2, 3], window=win).transpose(1, 2, 0)
+        with rasterio.open(job.mask_path) as src:
+            mask = src.read(1, window=win) > 127
+    except Exception as exc:
+        return _err(f"could not read rasters: {exc}")
+
+    try:
+        critic = _get_critic()
+        c = critic.review(rgb, mask, window=(col, row, w, h), question=question)
+    except Exception as exc:
+        return _err(f"critic unavailable: {exc}")
+
+    if not c.ok:
+        return _err(c.error or "critic returned no score", model=c.model)
+
+    payload = c.to_dict()
+    job.manifest.setdefault("critiques", []).append(payload)
+    job.save()
+    return _ok(**payload)
+
+
+@mcp.tool(
+    description=(
+        "Score how much the extracted centrelines actually look like a road "
+        "network, WITHOUT ground truth: connectivity, disconnected pieces, "
+        "dead ends and stray fragments. A real network is one connected graph, "
+        "so many components means roads were missed between them. Unlike the "
+        "vision critic this is deterministic and does catch misregistration."
+    )
+)
+def check_topology(job_id: str, snap_m: float = 2.5) -> dict:
+    from gisagent.vector.topology import analyse_file
+
+    try:
+        job = pipeline.get_job(job_id)
+    except FileNotFoundError as exc:
+        return _err(str(exc))
+    if not job.vector_path.exists():
+        return _err("no vectors yet - run vectorize_result first")
+
+    try:
+        rep = analyse_file(job.vector_path, snap_m=snap_m)
+    except Exception as exc:
+        return _err(f"topology analysis failed: {exc}")
+
+    payload = rep.to_dict()
+    job.manifest["topology"] = payload
+    job.save()
+    return _ok(**payload)
+
+
+@mcp.tool(
+    description=(
+        "Repair the extracted centrelines with QGIS geometry tools. "
+        "operation is one of: 'snap' (join endpoints within tolerance), "
+        "'rmdangle' (delete short spurs), 'extend' (bridge gaps where trees "
+        "hid the road), 'simplify' (drop redundant vertices), 'smooth'. "
+        "Writes a repaired GeoJSON and reports the topology before and after, "
+        "so the agent can tell whether the repair actually helped."
+    )
+)
+def repair_geometry(
+    job_id: str, operation: str = "snap", tolerance_m: float = 5.0,
+    timeout_s: float = 300.0,
+) -> dict:
+    from gisagent.qgis.process import (
+        QgisAlgorithmError, QgisNotAvailable, QgisProcess,
+    )
+    from gisagent.vector.topology import analyse_file
+
+    try:
+        job = pipeline.get_job(job_id)
+    except FileNotFoundError as exc:
+        return _err(str(exc))
+    if not job.vector_path.exists():
+        return _err("no vectors yet - run vectorize_result first")
+
+    # v.clean is the road-topology toolset: break, snap, rmdangle, prune.
+    # extendlines and simplify are native QGIS equivalents for the rest.
+    ops = {
+        "snap":     ("grass:v.clean", {"tool": [1], "threshold": [tolerance_m]}),
+        "rmdangle": ("grass:v.clean", {"tool": [2], "threshold": [tolerance_m]}),
+        "prune":    ("grass:v.clean", {"tool": [9], "threshold": [tolerance_m]}),
+        "extend":   ("native:extendlines", {"START_DISTANCE": tolerance_m,
+                                            "END_DISTANCE": tolerance_m}),
+        "simplify": ("native:simplifygeometries", {"METHOD": 0,
+                                                   "TOLERANCE": tolerance_m}),
+        "smooth":   ("native:smoothgeometry", {"ITERATIONS": 1, "OFFSET": 0.25,
+                                               "MAX_ANGLE": 180}),
+    }
+    if operation not in ops:
+        return _err(f"unknown operation {operation!r}; expected one of "
+                    f"{sorted(ops)}")
+
+    algorithm, extra = ops[operation]
+    out_path = job.dir / f"roads_{operation}.geojson"
+    params = {"input": str(job.vector_path), "INPUT": str(job.vector_path),
+              "output": str(out_path), "OUTPUT": str(out_path), **extra}
+
+    try:
+        before = analyse_file(job.vector_path).to_dict()
+        res = QgisProcess().run(algorithm, params, timeout=timeout_s)
+        if not out_path.exists():
+            return _err(f"{algorithm} produced no output", outputs=res.outputs)
+        after = analyse_file(out_path).to_dict()
+    except (QgisNotAvailable, QgisAlgorithmError) as exc:
+        return _err(str(exc))
+    except Exception as exc:
+        return _err(f"unexpected failure: {exc}")
+
+    return _ok(
+        operation=operation, algorithm=algorithm, output=str(out_path),
+        before={k: before[k] for k in
+                ("n_features", "n_components", "n_dangles", "score")},
+        after={k: after[k] for k in
+               ("n_features", "n_components", "n_dangles", "score")},
+        improved=after["score"] > before["score"],
+    )
 
 
 def main() -> None:
