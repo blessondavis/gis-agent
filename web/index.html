@@ -12,6 +12,11 @@
 
 <header class="top">
   <div class="brand">gis-agent <small>road annotation harness</small></div>
+  <div class="modeswitch" id="modeswitch" role="tablist"
+       title="Work shows the tools; Review hides them for checking output">
+    <button role="tab" aria-selected="true" data-mode="work">Work</button>
+    <button role="tab" aria-selected="false" data-mode="review">Review</button>
+  </div>
   <div class="spacer"></div>
   <div class="badges" id="health"></div>
 </header>
@@ -32,8 +37,13 @@
     </div>
 
     <div class="block">
-      <h2>Layers</h2>
-      <div class="layers">
+      <h2>View</h2>
+      <div class="tabs" id="viewtabs" role="tablist">
+        <button role="tab" aria-selected="true" data-view="layers">Layers</button>
+        <button role="tab" aria-selected="false" data-view="diagnostic"
+                title="Correct / missed / false-positive against reference data">Diagnostic</button>
+      </div>
+      <div class="layers" id="layerlist">
         <label><input type="checkbox" id="l-image" checked>
           <span class="swatch" style="background:#6b7a8d"></span> Satellite imagery</label>
         <label><input type="checkbox" id="l-mask">
@@ -51,6 +61,7 @@
 
     <div class="block">
       <h2>Accuracy <span class="right" id="acc-note"></span></h2>
+      <div id="verdict"></div>
       <div id="metrics"><p class="empty">not evaluated yet</p></div>
       <p class="hint">Roads cover only a few percent of a tile, so IoU and F1 on
         the road class are what matter. Relaxed F1 allows a few pixels of slack,

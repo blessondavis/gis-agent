@@ -288,9 +288,9 @@ Run the tests with `uv run pytest` (55 tests, no network or GPU required).
 
 ## The supervised backend
 
-> You are on **`supervised-unet`**. `main` is the zero-shot SAM 3 application;
-> the repository includes a segmentation backend trained on the dataset's own
-> labels, plus the training pipeline and a `benchmark` command.
+> Two backends ship together: zero-shot SAM 3, and a U-Net trained on the
+> dataset's own labels. The trained one is better everywhere and much better
+> in dense cities - see [Measured result](#measured-result).
 
 ### Why
 

@@ -126,8 +126,11 @@ async function loadJobs() {
     },
       el("div", { class: "id" }, j.manifest?.name || j.job_id),
       el("div", { class: "sub" },
-        `${j.stage} - ${j.region?.n_tiles ?? "?"} tile(s)` +
-        (j.metrics ? ` - IoU ${j.metrics.iou}` : "")))));
+        el("span", {}, `${j.stage} - ${j.region?.n_tiles ?? "?"} tile(s)`),
+        j.metrics
+          ? el("span", { class: "score q-" + band(j.metrics.iou).key },
+               fmt(j.metrics.iou))
+          : el("span", { class: "score dimtext" }, "--")))));
 }
 
 async function selectJob(id) {
@@ -182,8 +185,33 @@ async function loadJob() {
 
 const bust = (u) => `${u}?t=${Date.now()}`;
 
+/* A bare decimal cannot tell an analyst that 0.098 means "do not ship this".
+   Bands come from the measured runs: the trained model lands around 0.60 on
+   suburban and 0.45 on dense urban, while zero-shot on a city grid collapsed
+   to 0.098 -- a map missing ~90% of its streets. */
+const BANDS = [
+  { min: 0.55, key: "good",   label: "Good",            note: "review and export" },
+  { min: 0.35, key: "usable", label: "Usable",          note: "check false positives before shipping" },
+  { min: 0.15, key: "poor",   label: "Poor",            note: "refine before using" },
+  { min: -1,   key: "failed", label: "Failed",          note: "most roads are missing - do not ship" },
+];
+
+function band(iou) {
+  return BANDS.find(b => iou >= b.min) || BANDS[BANDS.length - 1];
+}
+
+function renderVerdict(m) {
+  const box = $("#verdict");
+  if (!box) return;
+  if (!m) { box.replaceChildren(); return; }
+  const b = band(m.iou);
+  box.replaceChildren(el("div", { class: "verdict " + b.key },
+    el("strong", {}, b.label), el("span", {}, b.note)));
+}
+
 function renderMetrics(m) {
   const box = $("#metrics");
+  renderVerdict(m);
   if (!m) { box.replaceChildren(el("p", { class: "empty" }, "not evaluated yet"));
             $("#acc-note").textContent = ""; return; }
   $("#acc-note").textContent = `${m.slack_px}px slack`;
@@ -453,7 +481,55 @@ async function upload(file) {
   } catch (e) { $("#upmsg").textContent = e.message; }
 }
 
+/* Work shows the agent and its tools; Review hides them so the output can be
+   checked without the machinery in the way. Diagnostic swaps the layer list
+   for the correct / missed / false-positive view, which is a different
+   question from "which layers are on". */
+function wireTabs() {
+  const modes = $("#modeswitch");
+  if (modes) {
+    modes.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-mode]");
+      if (!btn) return;
+      [...modes.children].forEach(b =>
+        b.setAttribute("aria-selected", String(b === btn)));
+      document.body.dataset.mode = btn.dataset.mode;
+      const right = document.querySelector(".col.right");
+      if (right) right.style.display = btn.dataset.mode === "review" ? "none" : "";
+      const ws = document.querySelector(".workspace");
+      if (ws) ws.style.gridTemplateColumns =
+        btn.dataset.mode === "review" ? "300px minmax(0, 1fr)" : "";
+      setTimeout(() => state.map && state.map.invalidateSize(), 60);
+    });
+  }
+
+  const views = $("#viewtabs");
+  if (views) {
+    views.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-view]");
+      if (!btn) return;
+      [...views.children].forEach(b =>
+        b.setAttribute("aria-selected", String(b === btn)));
+      const diag = btn.dataset.view === "diagnostic";
+      document.body.dataset.view = btn.dataset.view;
+      // diagnostic = predicted vs truth together; layers = user's own choice
+      if (diag) {
+        $("#l-mask").checked = true;
+        $("#l-truth").checked = true;
+        $("#l-vec").checked = false;
+      } else {
+        $("#l-mask").checked = false;
+        $("#l-truth").checked = false;
+        $("#l-vec").checked = true;
+      }
+      ["l-mask", "l-truth", "l-vec"].forEach(id =>
+        $("#" + id).dispatchEvent(new Event("change")));
+    });
+  }
+}
+
 initMap();
+wireTabs();
 loadHealth();
 await loadJobs();
 await loadJob();
