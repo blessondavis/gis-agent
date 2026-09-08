@@ -191,6 +191,7 @@ def screen_tiles(
     *,
     max_workers: int = 12,
     sample_px: int = 188,
+    cache_path: Path | None = None,
 ) -> dict[str, TileQuality]:
     """Measure blank padding and road density over the network, cheaply.
 
@@ -199,9 +200,33 @@ def screen_tiles(
     wastes inference and makes the output look broken. GDAL's /vsicurl reader
     plus a downsampled read lets us check a tile for a few hundred KB instead of
     the ~9 MB the full tile costs.
+
+    Screening several hundred tiles still costs minutes of network time, so
+    results are cached to ``cache_path`` and only unseen tiles are fetched. That
+    keeps an interactive region picker responsive and makes an interrupted scan
+    resumable rather than wasted.
     """
+    import json
+
     import rasterio
     from rasterio.enums import Resampling
+
+    cached: dict[str, TileQuality] = {}
+    if cache_path and cache_path.exists():
+        try:
+            raw = json.loads(cache_path.read_text())
+            for name, rec in raw.items():
+                cached[name] = TileQuality(
+                    name=name,
+                    blank_fraction=rec.get("blank_fraction", 0.0),
+                    road_fraction=rec.get("road_fraction", 0.0),
+                    error=rec.get("error", ""),
+                )
+        except Exception:
+            cached = {}  # a corrupt cache is not worth failing over
+
+    # Re-try previously failed tiles; a failure is usually a transient fetch.
+    todo = [r for r in refs if r.name not in cached or cached[r.name].error]
 
     def one(ref: TileRef) -> TileQuality:
         q = TileQuality(name=ref.name)
@@ -227,9 +252,19 @@ def screen_tiles(
             q.error = f"label: {exc}"
         return q
 
-    with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        results = list(pool.map(one, refs))
-    return {q.name: q for q in results}
+    if todo:
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for q in pool.map(one, todo):
+                cached[q.name] = q
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {n: q.to_dict() for n, q in cached.items()}
+            tmp = cache_path.with_suffix(".json.part")
+            tmp.write_text(json.dumps(payload, indent=1))
+            tmp.replace(cache_path)
+
+    wanted = {r.name for r in refs}
+    return {n: q for n, q in cached.items() if n in wanted}
 
 
 def find_best_block(
@@ -239,6 +274,7 @@ def find_best_block(
     max_blank: float = 0.15,
     min_road: float = 0.004,
     search_limit: int = 220,
+    cache_path: Path | None = None,
 ) -> tuple[list[TileRef] | None, dict[str, TileQuality]]:
     """Pick a contiguous block that is actually worth looking at.
 
@@ -273,7 +309,7 @@ def find_best_block(
 
     # screen only the tiles that actually appear in a candidate block
     unique = {t.name: t for blk in anchors for t in blk}
-    quality = screen_tiles(list(unique.values()))
+    quality = screen_tiles(list(unique.values()), cache_path=cache_path)
 
     scored = []
     for blk in anchors:

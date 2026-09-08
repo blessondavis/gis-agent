@@ -1,0 +1,37 @@
+services:
+  gis-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        # switch to cu128 together with the deploy.resources block below to
+        # run SAM 3 on an RTX 50-series GPU
+        TORCH_VARIANT: cpu
+    image: gis-agent:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # secrets come from the host env or an .env file, never baked into the image
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      GISAGENT_LLM_MODEL: ${GISAGENT_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      HF_TOKEN: ${HF_TOKEN:?set HF_TOKEN}
+      GISAGENT_SAM_MODEL: ${GISAGENT_SAM_MODEL:-facebook/sam3}
+      GISAGENT_DEVICE: ${GISAGENT_DEVICE:-auto}
+    volumes:
+      # imagery, job outputs and the ~3.4 GB model cache persist across restarts
+      - gis-data:/data
+    restart: unless-stopped
+
+    # --- GPU: needs nvidia-container-toolkit on the host ---
+    # Uncomment together with TORCH_VARIANT: cu128 above.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  gis-data:
