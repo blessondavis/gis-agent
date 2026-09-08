@@ -182,6 +182,13 @@ def build(
         console.print(f"[yellow]warning:[/] mostly no-data tiles: {offenders}")
         console.print("run [bold]gisagent regions[/] and try the next candidate")
 
+    # The upstream label rasters ship with no CRS or transform, so they cannot
+    # be mosaicked until the matching satellite tile's georeferencing is copied
+    # onto them.
+    from gisagent.raster.georef import georeference_labels
+
+    georeference_labels(settings.raw_dir / "sat", settings.raw_dir / "map")
+
     job = new_job(name or None)
     info = job.build_region(
         [r.image_path for r in results],
