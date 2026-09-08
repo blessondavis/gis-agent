@@ -76,6 +76,21 @@ class Settings(BaseSettings):
     hf_token: str | None = Field(default=None, alias="HF_TOKEN")
     sam_model: str = Field(default="facebook/sam3", alias="GISAGENT_SAM_MODEL")
     device_pref: str = Field(default="auto", alias="GISAGENT_DEVICE")
+    segment_backend: str = Field(default="unet", alias="GISAGENT_BACKEND")
+    unet_checkpoint: str = Field(
+        default="models/unet_roads.pt", alias="GISAGENT_UNET_CHECKPOINT"
+    )
+
+    # --- vision critic ---
+    # Judges an annotation from the picture alone, which is what makes
+    # unlabelled imagery workable. Measured rho=0.886 against known-quality
+    # degradations; see docs/vlm-critic.md, including where it is blind.
+    vlm_model: str = Field(
+        default="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        alias="GISAGENT_VLM_MODEL",
+    )
+    vlm_image_px: int = Field(default=512, alias="GISAGENT_VLM_IMAGE_PX")
+    vlm_jpeg_quality: int = Field(default=72, alias="GISAGENT_VLM_JPEG_QUALITY")
 
     # --- paths ---
     data_dir: Path = Field(default=Path("./data"), alias="GISAGENT_DATA_DIR")
