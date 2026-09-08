@@ -112,33 +112,40 @@ def regions(
 ) -> None:
     """Find a contiguous block of tiles worth annotating."""
     from gisagent.dataset.mass_roads import (
-        find_best_block, find_contiguous_block, list_split,
+        find_contiguous_block, list_split, rank_blocks,
     )
 
     refs = list_split(split)
     console.print(f"{len(refs)} tiles in [bold]{split}[/]")
 
-    if screen:
-        cache = get_settings().cache_dir / "tile_quality.json"
-        with console.status("screening tiles over the network..."):
-            block, quality = find_best_block(
-                refs, size=size, search_limit=limit, cache_path=cache
-            )
-    else:
-        block, quality = find_contiguous_block(refs, size, size), {}
+    if not screen:
+        block = find_contiguous_block(refs, size, size)
+        if not block:
+            console.print("[red]no contiguous block found[/]")
+            raise typer.Exit(1)
+        console.print("names: " + " ".join(r.name for r in block))
+        return
 
-    if not block:
-        console.print("[red]no contiguous block found[/]")
+    cache = get_settings().cache_dir / "tile_quality.json"
+    with console.status("screening tiles (cached after the first run)..."):
+        scored, _quality = rank_blocks(
+            refs, size=size, search_limit=limit, cache_path=cache
+        )
+    if not scored:
+        console.print("[red]no block passed the road-density floor[/]")
         raise typer.Exit(1)
 
-    table = Table("tile", "blank %", "road %", title=f"{size}x{size} block")
-    for r in block:
-        q = quality.get(r.name)
-        table.add_row(r.name,
-                      f"{q.blank_fraction*100:.1f}" if q else "-",
-                      f"{q.road_fraction*100:.2f}" if q else "-")
+    table = Table("#", "road %", "tiles",
+                  title=f"top {size}x{size} blocks by road density")
+    for i, (road, blk) in enumerate(scored[:10], start=1):
+        table.add_row(str(i), f"{road*100:.2f}", " ".join(t.name for t in blk))
     console.print(table)
-    console.print("names: " + " ".join(r.name for r in block))
+    console.print(
+        "\nblank no-data padding is only detectable once tiles are local, so "
+        "[bold]gisagent build[/] verifies the pick and falls through to the "
+        "next candidate if needed."
+    )
+    console.print("\nbest: " + " ".join(t.name for t in scored[0][1]))
 
 
 @app.command()
@@ -148,16 +155,32 @@ def build(
     name: str = typer.Option("", help="job name"),
 ) -> None:
     """Download tiles and assemble them into a region job."""
-    from gisagent.dataset.mass_roads import TileRef, decode_name, download_tiles
+    from gisagent.dataset.mass_roads import (
+        TileRef, decode_name, download_tiles, measure_blank,
+    )
     from gisagent.pipeline import new_job
 
     settings = get_settings()
-    refs = [TileRef(t, split, *decode_name(t)) for t in tiles]
+    refs = [
+        TileRef(name=t, split=split, key_e=decode_name(t)[0],
+                key_n=decode_name(t)[1])
+        for t in tiles
+    ]
     with console.status(f"downloading {len(refs)} tiles..."):
         results = download_tiles(refs, settings.raw_dir)
     for r in results:
         if r.errors:
             console.print(f"[red]{r.ref.name}: {r.errors}[/]")
+
+    # white no-data padding is only visible once the pixels are local
+    blanks = {r.ref.name: measure_blank(r.image_path)
+              for r in results if not r.errors}
+    worst = max(blanks.values(), default=0.0)
+    if worst > 0.12:
+        offenders = ", ".join(f"{n} {v*100:.0f}%"
+                              for n, v in blanks.items() if v > 0.12)
+        console.print(f"[yellow]warning:[/] mostly no-data tiles: {offenders}")
+        console.print("run [bold]gisagent regions[/] and try the next candidate")
 
     job = new_job(name or None)
     info = job.build_region(
