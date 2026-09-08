@@ -313,6 +313,55 @@ def train(
 
 
 @app.command()
+def benchmark(
+    job_ids: list[str] = typer.Argument(..., help="jobs to score"),
+    models: str = typer.Option("sam3,unet", help="comma-separated backends"),
+    prompt: str = typer.Option("road network", help="sam3 only"),
+    threshold: float = typer.Option(0.4),
+    upscale: int = typer.Option(1),
+    checkpoint: str = typer.Option("", help="unet checkpoint path"),
+) -> None:
+    """Score each backend on each job and print them side by side.
+
+    Segments, stitches and evaluates only -- vectorising adds time without
+    changing the pixel metrics being compared.
+    """
+    from gisagent.pipeline import get_job
+    from gisagent.segment import make_segmenter
+
+    backends = [m.strip() for m in models.split(",") if m.strip()]
+    rows: list[tuple] = []
+
+    for backend in backends:
+        kwargs = {"checkpoint": checkpoint} if (backend == "unet" and checkpoint) else {}
+        segmenter = make_segmenter(backend, **kwargs)
+        for job_id in job_ids:
+            job = get_job(job_id)
+            if not job.has_truth():
+                console.print(f"[yellow]{job_id}: no ground truth, skipping[/]")
+                continue
+            name = job.manifest.get("name", job_id)
+            console.print(f"  {backend} on {name}...")
+            job.segment(segmenter, prompt=prompt, threshold=threshold,
+                        upscale=upscale)
+            job.stitch(threshold=threshold)
+            m = job.evaluate()
+            truth = (job.manifest.get("region") or {}).get("truth_fraction", 0.0)
+            rows.append((name, truth, backend, m))
+        if hasattr(segmenter, "unload"):
+            segmenter.unload()
+
+    table = Table("region", "road %", "model", "IoU", "F1", "precision",
+                  "recall", "relaxed F1", title="road extraction, strict vs relaxed")
+    for name, truth, backend, m in rows:
+        table.add_row(name, f"{truth*100:.1f}", backend,
+                      f"{m['iou']:.3f}", f"{m['f1']:.3f}",
+                      f"{m['precision']:.3f}", f"{m['recall']:.3f}",
+                      f"{m['relaxed_f1']:.3f}")
+    console.print(table)
+
+
+@app.command()
 def jobs() -> None:
     """List jobs, newest first."""
     from gisagent.pipeline import list_jobs
