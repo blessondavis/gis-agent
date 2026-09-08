@@ -354,6 +354,34 @@ Segments, stitches and scores each backend on each job, then prints them side by
 side. It skips vectorising, which costs time without changing the pixel metrics
 under comparison.
 
+### Measured result
+
+![SAM 3 vs U-Net on Boston Back Bay](docs/compare_urban.png)
+
+Same regions, same pipeline, same threshold — only the backend differs. Trained
+for 9.9 minutes on 135 tiles on an RTX 5050 (val IoU 0.608 at epoch 13).
+
+| region | road % | model | IoU | F1 | precision | recall | relaxed F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Andover (suburban) | 1.1 | sam3 | 0.455 | 0.626 | 0.497 | 0.844 | 0.822 |
+| Andover (suburban) | 1.1 | **unet** | **0.581** | **0.735** | 0.642 | 0.860 | 0.857 |
+| Boston (urban) | 15.9 | sam3 | 0.098 | 0.178 | 0.511 | 0.108 | 0.217 |
+| Boston (urban) | 15.9 | **unet** | **0.453** | **0.624** | 0.621 | **0.627** | 0.791 |
+
+The urban case is where it matters: **IoU 4.6×, recall 5.8×**. In vector terms
+the same region goes from 149 centrelines totalling 13.3 km to 2,061 totalling
+162.9 km — SAM 3 was finding the arterials and almost none of the grid.
+
+Suburban improves too (+28 % IoU), so this is not a trade of one case for the
+other. Precision is the axis that gains most (0.497 → 0.642): a supervised model
+has actually learned that a parking lot is not a road, which no amount of prompt
+wording teaches a concept model.
+
+Worth being clear about what this is not: 135 tiles and ten minutes is a small
+model on a small budget. Published work on this dataset reaches higher. The
+point here is that the *failure mode is fixable with supervision*, and that
+swapping backends changes nothing else in the system.
+
 ### Extra layout on this branch
 
 ```
