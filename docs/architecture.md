@@ -96,7 +96,8 @@ raw geospatial payloads would otherwise exhaust the context window.
 | QGIS escape hatch | `qgis_version`, `list_qgis_algorithms`, `run_qgis_algorithm` |
 
 The last group matters: rather than wrapping every QGIS algorithm, the agent can
-list and invoke any of the ~1500 available ones directly.
+list and invoke any of them directly — 712 on this install, including
+`gdal:polygonize`, `grass:r.thin` and `native:simplifygeometries`.
 
 ## Web application
 

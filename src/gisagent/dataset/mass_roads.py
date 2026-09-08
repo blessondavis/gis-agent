@@ -194,6 +194,7 @@ def screen_tiles(
     cache_path: Path | None = None,
     check_blank: bool = False,
     progress=None,
+    flush_every: int = 100,
 ) -> dict[str, TileQuality]:
     """Rank tiles by road density, over the network, cheaply.
 
@@ -270,22 +271,32 @@ def screen_tiles(
             q.error = f"label: {exc}"
         return q
 
+    def flush() -> None:
+        if not cache_path:
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {n: q.to_dict() for n, q in cached.items()}
+        tmp = cache_path.with_suffix(".json.part")
+        tmp.write_text(json.dumps(payload, indent=1))
+        tmp.replace(cache_path)  # atomic, so a kill cannot truncate the cache
+
     if todo:
         limits = httpx.Limits(max_connections=max_workers,
                               max_keepalive_connections=max_workers)
-        with httpx.Client(timeout=60.0, follow_redirects=True,
-                          limits=limits) as client:
-            with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
-                for q in pool.map(one, todo):
-                    cached[q.name] = q
-                    if progress:
-                        progress(len(cached), len(todo), q)
-        if cache_path:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {n: q.to_dict() for n, q in cached.items()}
-            tmp = cache_path.with_suffix(".json.part")
-            tmp.write_text(json.dumps(payload, indent=1))
-            tmp.replace(cache_path)
+        try:
+            with httpx.Client(timeout=60.0, follow_redirects=True,
+                              limits=limits) as client:
+                with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    for i, q in enumerate(pool.map(one, todo), start=1):
+                        cached[q.name] = q
+                        if progress:
+                            progress(i, len(todo), q)
+                        # checkpoint, so an interrupted scan of a thousand
+                        # tiles resumes rather than starting over
+                        if flush_every and i % flush_every == 0:
+                            flush()
+        finally:
+            flush()
 
     wanted = {r.name for r in refs}
     return {n: q for n, q in cached.items() if n in wanted}
