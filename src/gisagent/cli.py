@@ -210,15 +210,29 @@ def run_pipeline(
 ) -> None:
     """Run tile -> segment -> stitch -> vectorize -> evaluate on a job."""
     from gisagent.pipeline import get_job
-    from gisagent.segment.sam3 import Sam3Segmenter
+    from gisagent.segment.sam3 import Sam3RoadSegmenter
 
     job = get_job(job_id)
     console.print(job.tile(chip_size=chip_size, overlap=overlap))
 
-    segmenter = Sam3Segmenter()
-    with console.status("segmenting chips..."):
-        console.print(job.segment(segmenter, prompt=prompt,
-                                  threshold=threshold, upscale=upscale))
+    segmenter = Sam3RoadSegmenter()
+
+    # No console.status() spinner around this: its background render thread
+    # segfaults the interpreter when CUDA work runs underneath it on Windows.
+    # Per-chip progress lines are more useful during a long run anyway.
+    def on_chip(done: int, total: int, chip_id: str, res) -> None:
+        cov = float((res.confidence > threshold).mean())
+        console.print(
+            f"  [{done}/{total}] {chip_id}  instances={res.n_instances}"
+            f"  coverage={cov:.3f}",
+            highlight=False,
+        )
+
+    seg = job.segment(segmenter, prompt=prompt, threshold=threshold,
+                      upscale=upscale, progress=on_chip)
+    console.print(f"segmented {seg['n_chips']} chips, "
+                  f"{seg['total_instances']} instances, "
+                  f"mean coverage {seg['mean_coverage']:.4f}")
     console.print(job.stitch(threshold=threshold))
     console.print(job.vectorize())
     if job.has_truth():
