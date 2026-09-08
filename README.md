@@ -298,6 +298,20 @@ practical, and it wouldn't address the failure mode. It implements the same
 interface, so `run --model unet` swaps it in and everything downstream is
 unchanged.
 
+**It works.** Ten minutes of training on 135 tiles, scored on the same two
+regions with the same pipeline:
+
+| region | model | IoU | F1 | recall |
+| --- | --- | --- | --- | --- |
+| Andover (suburban) | sam3 | 0.455 | 0.626 | 0.844 |
+| Andover (suburban) | **unet** | **0.581** | **0.735** | 0.860 |
+| Boston (urban) | sam3 | 0.098 | 0.178 | 0.108 |
+| Boston (urban) | **unet** | **0.453** | **0.624** | **0.627** |
+
+Urban IoU improves 4.6× and recall 5.8×, and suburban improves too — so it is
+not a trade of one case for the other. Check out that branch for the training
+pipeline and the full comparison.
+
 ---
 
 ## Troubleshooting
