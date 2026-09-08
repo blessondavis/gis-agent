@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gis-agent - road annotation workspace</title>
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+
+<header class="top">
+  <div class="brand">gis-agent <small>road annotation harness</small></div>
+  <div class="spacer"></div>
+  <div class="badges" id="health"></div>
+</header>
+
+<div class="workspace">
+
+  <!-- ================= LEFT: data + layers + results ================= -->
+  <aside class="col left">
+    <div class="block">
+      <h2>Region <span class="right" id="stage"></span></h2>
+      <div class="btnrow">
+        <button id="btn-new" class="sm">New region</button>
+        <button id="btn-upload" class="ghost sm">Upload</button>
+      </div>
+      <div class="joblist" id="joblist" style="margin-top:10px">
+        <p class="empty">no regions yet</p>
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Layers</h2>
+      <div class="layers">
+        <label><input type="checkbox" id="l-image" checked>
+          <span class="swatch" style="background:#6b7a8d"></span> Satellite imagery</label>
+        <label><input type="checkbox" id="l-mask">
+          <span class="swatch" style="background:var(--road)"></span> Predicted mask</label>
+        <label><input type="checkbox" id="l-truth">
+          <span class="swatch" style="background:var(--truth)"></span> Ground truth</label>
+        <label><input type="checkbox" id="l-vec" checked>
+          <span class="swatch" style="background:var(--vec)"></span> Road centrelines</label>
+        <label><input type="checkbox" id="l-base">
+          <span class="swatch" style="background:#3a4757"></span> OSM basemap</label>
+      </div>
+      <label for="opacity">Overlay opacity <span id="opval" class="mono">70%</span></label>
+      <div class="slider-row"><input type="range" id="opacity" min="0" max="100" value="70"></div>
+    </div>
+
+    <div class="block">
+      <h2>Accuracy <span class="right" id="acc-note"></span></h2>
+      <div id="metrics"><p class="empty">not evaluated yet</p></div>
+      <p class="hint">Roads cover only a few percent of a tile, so IoU and F1 on
+        the road class are what matter. Relaxed F1 allows a few pixels of slack,
+        the convention for hand-drawn road labels.</p>
+    </div>
+
+    <div class="block">
+      <h2>Extracted network</h2>
+      <div class="card"><dl class="kv" id="vecstats">
+        <dt>status</dt><dd class="dimtext">none yet</dd></dl></div>
+      <a id="download" href="#" download class="small" style="display:none;margin-top:8px;display:none">
+        Download GeoJSON</a>
+    </div>
+  </aside>
+
+  <!-- ================= CENTER: map ================= -->
+  <section class="col center">
+    <div class="maptools">
+      <button id="btn-pick" class="ghost sm">Select area to rework</button>
+      <button id="btn-clearpick" class="ghost sm" style="display:none">Clear</button>
+      <div class="grow mapnote" id="mapnote">Drag a box on the map, then tell the agent what is wrong there.</div>
+    </div>
+    <div id="map"></div>
+    <div class="legend">
+      <span><i style="background:var(--vec)"></i> centreline (opacity = confidence)</span>
+      <span><i style="background:var(--road)"></i> predicted road mask</span>
+      <span><i style="background:var(--truth)"></i> ground truth</span>
+      <span><i style="background:#4c9aff"></i> selected area</span>
+    </div>
+  </section>
+
+  <!-- ================= RIGHT: agent ================= -->
+  <aside class="col right">
+    <div class="chat-head">
+      <h2>Agent</h2>
+      <span class="pill" id="agentstate"><span class="dot"></span> idle</span>
+      <div class="spacer"></div>
+      <button id="btn-reset" class="ghost sm" title="clear the conversation">Reset</button>
+    </div>
+
+    <div id="chatlog">
+      <p class="empty">Create or pick a region, then ask the agent to annotate it.</p>
+    </div>
+
+    <div class="chat-input">
+      <div class="suggestions" id="suggestions"></div>
+      <div class="wrap">
+        <textarea id="msg" rows="1" placeholder="Ask the agent... e.g. 'annotate the roads in this region'"></textarea>
+        <button id="send">Send</button>
+      </div>
+    </div>
+  </aside>
+</div>
+</div>
+
+<!-- ---------- dialogs ---------- -->
+<dialog id="dlg-new">
+  <h3>New region</h3>
+  <p class="hint" style="margin-top:0">Tiles are picked so they physically abut and
+    have real imagery in them, giving one seamless mosaic rather than a scattered
+    grid of half-blank tiles.</p>
+  <label for="split">Dataset split</label>
+  <select id="split">
+    <option value="train">train - 1108 tiles, densest coverage</option>
+    <option value="valid">valid - 14 tiles</option>
+    <option value="test">test - 49 tiles, spatially sparse</option>
+  </select>
+  <label for="block">Region size</label>
+  <select id="block">
+    <option value="2" selected>2 x 2 tiles - 3.0 x 3.0 km</option>
+    <option value="3">3 x 3 tiles - 4.5 x 4.5 km</option>
+    <option value="1">1 tile - 1.5 x 1.5 km</option>
+  </select>
+  <label><input type="checkbox" id="screen" checked style="width:auto"> Screen out blank / road-poor tiles first</label>
+  <label for="jobname">Label (optional)</label>
+  <input id="jobname" placeholder="e.g. andover-north">
+  <div class="btnrow" style="margin-top:16px">
+    <button id="do-new">Build region</button>
+    <button class="ghost" onclick="document.getElementById('dlg-new').close()">Cancel</button>
+  </div>
+  <p id="newmsg" class="hint"></p>
+</dialog>
+
+<dialog id="dlg-upload">
+  <h3>Upload imagery</h3>
+  <p class="hint" style="margin-top:0">A georeferenced GeoTIFF (with a CRS) so results
+    can be placed on a map and measured in metres. Without ground truth the agent can
+    still annotate, it just cannot score itself.</p>
+  <div class="drop" id="drop">Click or drop a .tif here</div>
+  <input type="file" id="file" accept=".tif,.tiff" style="display:none">
+  <p id="upmsg" class="hint"></p>
+  <div class="btnrow" style="margin-top:14px">
+    <button class="ghost" onclick="document.getElementById('dlg-upload').close()">Close</button>
+  </div>
+</dialog>
+
+<script src="/static/vendor/leaflet.js"></script>
+<script type="module" src="/static/workspace.js"></script>
+</body>
+</html>

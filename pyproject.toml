@@ -1,0 +1,77 @@
+[project]
+name = "gis-agent"
+version = "0.1.0"
+description = "Agentic road annotation on satellite imagery: SAM 3 segmentation orchestrated over MCP tools with headless QGIS/GDAL vectorization."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+
+dependencies = [
+    # --- raster / geospatial ---
+    "rasterio>=1.4.3",
+    "shapely>=2.0.6",
+    "pyproj>=3.7.0",
+    "geopandas>=1.0.1",
+    "pyogrio>=0.10.0",
+    "numpy>=2.1.0",
+    "scikit-image>=0.25.0",
+    "opencv-python-headless>=4.10.0",
+    "pillow>=11.0.0",
+
+    # --- model ---
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
+    "transformers>=4.57.0",
+    "accelerate>=1.2.0",
+    "safetensors>=0.4.5",
+    "huggingface-hub>=0.26.0",
+
+    # --- agent + MCP ---
+    "mcp>=1.2.0",
+    "openai>=1.60.0",
+
+    # --- web ---
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "python-multipart>=0.0.17",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+
+    # --- misc ---
+    "httpx>=0.27.0",
+    "typer>=0.15.0",
+    "rich>=13.9.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "ruff>=0.8.0"]
+
+[project.scripts]
+gisagent = "gisagent.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gisagent"]
+
+# RTX 50-series (Blackwell, sm_120) needs CUDA 12.8+ wheels; the default PyPI
+# torch wheel does not carry sm_120 kernels.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

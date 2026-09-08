@@ -1,0 +1,29 @@
+# data & model artefacts (large, regenerable)
+data/
+!data/.gitkeep
+*.tif
+*.tiff
+*.gpkg
+*.pt
+*.safetensors
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# secrets
+.env
+.env.local
+
+# os / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# runtime logs
+*.log
