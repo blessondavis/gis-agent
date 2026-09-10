@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="540" viewBox="0 0 1600 540" role="img" aria-labelledby="t d">
+  <title id="t">How gis-agent judges its own output</title>
+  <desc id="d">Four quality signals: ground-truth metrics on labelled tiles, and three label-free signals (a vision-model critic, network topology and model confidence) for unlabelled imagery.</desc>
+  <defs>
+    <style>
+      .sans { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; }
+      .mono { font-family: Consolas, SFMono-Regular, Menlo, 'Liberation Mono', monospace; }
+      .t1 { fill: #edeff2; } .t2 { fill: #a8b0ba; } .t3 { fill: #6b7480; }
+      .cap { font-size: 12px; letter-spacing: 2px; font-weight: 600; fill: #6b7480; }
+    </style>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 H0 V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="540" rx="18" fill="#08090b"/>
+  <rect width="1600" height="540" rx="18" fill="url(#grid)"/>
+
+  <text x="60" y="62" class="sans" font-size="16" font-weight="600" letter-spacing="3" fill="#4fe3e8">HOW IT KNOWS WHEN TO STOP</text>
+  <text x="60" y="98" class="sans t1" font-size="28" font-weight="700">Four quality signals, because no single one is enough</text>
+
+  <g class="sans">
+    <!-- 1 ground truth : x=60 -->
+    <rect x="60" y="136" width="350" height="262" rx="14" fill="#0f1114" stroke="#23272e"/>
+    <rect x="60" y="136" width="350" height="3" rx="1.5" fill="#4ade80"/>
+    <rect x="278" y="156" width="112" height="24" rx="12" fill="none" stroke="#6b7480" stroke-opacity="0.7"/>
+    <text x="334" y="173" text-anchor="middle" class="mono t2" font-size="12">needs labels</text>
+    <text x="84" y="196" class="t1" font-size="24" font-weight="700">Ground truth</text>
+    <text x="84" y="234" class="cap">MEASURES</text>
+    <text x="84" y="258" class="t2" font-size="15">IoU, precision, recall, F1, plus</text>
+    <text x="84" y="278" class="t2" font-size="15">relaxed scores with 3 px of slack</text>
+    <text x="84" y="316" class="cap">LIMIT</text>
+    <text x="84" y="340" class="t2" font-size="15">Only exists for the labelled tiles</text>
+    <text x="84" y="378" class="mono" font-size="14" fill="#4ade80">evaluate_result</text>
+
+    <!-- 2 VLM critic : x=436 -->
+    <rect x="436" y="136" width="350" height="262" rx="14" fill="#0f1114" stroke="#23272e"/>
+    <rect x="436" y="136" width="350" height="3" rx="1.5" fill="#7c5cff"/>
+    <rect x="666" y="156" width="100" height="24" rx="12" fill="#7c5cff" fill-opacity="0.14" stroke="#7c5cff" stroke-opacity="0.7"/>
+    <text x="716" y="173" text-anchor="middle" class="mono" font-size="12" fill="#b9a8ff">label-free</text>
+    <text x="460" y="196" class="t1" font-size="24" font-weight="700">VLM critic</text>
+    <text x="460" y="234" class="cap">CATCHES</text>
+    <text x="460" y="258" class="t2" font-size="15">Missing roads, and roads drawn</text>
+    <text x="460" y="278" class="t2" font-size="15">over buildings. Rank ρ 0.886 vs IoU</text>
+    <text x="460" y="316" class="cap">LIMIT</text>
+    <text x="460" y="340" class="t2" font-size="15">Blind to a uniform 12 px offset</text>
+    <text x="460" y="378" class="mono" font-size="14" fill="#b9a8ff">critique_annotation</text>
+
+    <!-- 3 topology : x=812 -->
+    <rect x="812" y="136" width="350" height="262" rx="14" fill="#0f1114" stroke="#23272e"/>
+    <rect x="812" y="136" width="350" height="3" rx="1.5" fill="#4fe3e8"/>
+    <rect x="1042" y="156" width="100" height="24" rx="12" fill="#7c5cff" fill-opacity="0.14" stroke="#7c5cff" stroke-opacity="0.7"/>
+    <text x="1092" y="173" text-anchor="middle" class="mono" font-size="12" fill="#b9a8ff">label-free</text>
+    <text x="836" y="196" class="t1" font-size="24" font-weight="700">Topology</text>
+    <text x="836" y="234" class="cap">CATCHES</text>
+    <text x="836" y="258" class="t2" font-size="15">Fragments, dead ends, gaps, and</text>
+    <text x="836" y="278" class="t2" font-size="15">misregistration the critic misses</text>
+    <text x="836" y="316" class="cap">LIMIT</text>
+    <text x="836" y="340" class="t2" font-size="15">Can't tell a road from a river</text>
+    <text x="836" y="378" class="mono" font-size="14" fill="#4fe3e8">check_topology</text>
+
+    <!-- 4 confidence : x=1188 -->
+    <rect x="1188" y="136" width="350" height="262" rx="14" fill="#0f1114" stroke="#23272e"/>
+    <rect x="1188" y="136" width="350" height="3" rx="1.5" fill="#ffb84d"/>
+    <rect x="1418" y="156" width="100" height="24" rx="12" fill="#7c5cff" fill-opacity="0.14" stroke="#7c5cff" stroke-opacity="0.7"/>
+    <text x="1468" y="173" text-anchor="middle" class="mono" font-size="12" fill="#b9a8ff">label-free</text>
+    <text x="1212" y="196" class="t1" font-size="24" font-weight="700">Model confidence</text>
+    <text x="1212" y="234" class="cap">CATCHES</text>
+    <text x="1212" y="258" class="t2" font-size="15">The roads the model itself was</text>
+    <text x="1212" y="278" class="t2" font-size="15">least sure about</text>
+    <text x="1212" y="316" class="cap">COST</text>
+    <text x="1212" y="340" class="t2" font-size="15">Already computed at inference</text>
+    <text x="1212" y="378" class="mono" font-size="14" fill="#ffb84d">low_confidence_roads</text>
+  </g>
+
+  <!-- footer -->
+  <rect x="60" y="428" width="1478" height="72" rx="14" fill="#7c5cff" fill-opacity="0.08" stroke="#7c5cff" stroke-opacity="0.35"/>
+  <text x="90" y="459" class="sans t1" font-size="17" font-weight="600">On unlabelled imagery, the critic and the topology fail in opposite directions, so the agent checks both.</text>
+  <text x="90" y="484" class="sans t2" font-size="15">When they agree, it trusts them. When they disagree, it is told to say so rather than pick a side, because that disagreement is what a human should look at.</text>
+</svg>

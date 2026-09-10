@@ -84,16 +84,20 @@ raw geospatial payloads would otherwise exhaust the context window.
 
 ## MCP tool surface
 
-16 tools in `mcp_servers/roads_server.py`:
+19 tools in `mcp_servers/roads_server.py`:
 
 | group | tools |
 |---|---|
 | discovery | `list_available_tiles`, `list_jobs`, `get_job_status` |
 | region | `create_region_job`, `tile_region`, `inspect_chip` |
 | inference | `segment_chips`, `stitch_result`, `refine_area` |
-| quality | `evaluate_result`, `sweep_threshold`, `low_confidence_roads` |
-| vector | `vectorize_result` |
+| quality, with labels | `evaluate_result`, `sweep_threshold`, `low_confidence_roads` |
+| quality, label-free | `critique_annotation`, `check_topology` |
+| vector | `vectorize_result`, `repair_geometry` |
 | QGIS escape hatch | `qgis_version`, `list_qgis_algorithms`, `run_qgis_algorithm` |
+
+The label-free pair exists because real imagery has no ground truth. Why it is
+a pair and not just the vision critic is in [vlm-critic.md](vlm-critic.md).
 
 The last group matters: rather than wrapping every QGIS algorithm, the agent can
 list and invoke any of them directly — 712 on this install, including

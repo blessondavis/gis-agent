@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="540" viewBox="0 0 1600 540" role="img" aria-labelledby="t d">
+<title id="t">SAM 3 vs U-Net, measured</title>
+<desc id="d">IoU, F1 and recall for zero-shot SAM 3 and the trained U-Net. Suburban Andover: IoU 0.455 vs 0.581, F1 0.626 vs 0.735, recall 0.844 vs 0.860. Dense urban Boston: IoU 0.098 vs 0.453, F1 0.178 vs 0.624, recall 0.108 vs 0.627.</desc>
+<defs><style>.sans{font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif}.mono{font-family:Consolas,SFMono-Regular,Menlo,monospace}.t1{fill:#edeff2}.t2{fill:#a8b0ba}.t3{fill:#6b7480}</style><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0 H0 V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/></pattern></defs>
+<rect width="1600" height="540" rx="18" fill="#08090b"/><rect width="1600" height="540" rx="18" fill="url(#grid)"/>
+<text x="60" y="62" class="sans" font-size="16" font-weight="600" letter-spacing="3" fill="#4fe3e8">MEASURED</text>
+<text x="60" y="98" class="sans t1" font-size="28" font-weight="700">Ten minutes of supervised training fixes the dense-city failure</text>
+<rect x="1180" y="84" width="14" height="14" rx="3" fill="#4c8dff"/>
+<text x="1202" y="96" class="sans t2" font-size="15">SAM 3 zero-shot</text>
+<rect x="1360" y="84" width="14" height="14" rx="3" fill="#cf7a26"/>
+<text x="1382" y="96" class="sans t2" font-size="15">U-Net, trained</text>
+<rect x="60" y="126" width="700" height="346" rx="14" fill="#0f1114" stroke="#23272e"/>
+<text x="84" y="162" class="sans t1" font-size="20" font-weight="700">Suburban</text>
+<text x="186" y="162" class="sans t3" font-size="15">Andover · 1.1 % road</text>
+<line x1="180.0" y1="194" x2="180.0" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="180.0" y="438" text-anchor="middle" class="mono t3" font-size="12">0</text>
+<line x1="297.5" y1="194" x2="297.5" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="297.5" y="438" text-anchor="middle" class="mono t3" font-size="12">0.25</text>
+<line x1="415.0" y1="194" x2="415.0" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="415.0" y="438" text-anchor="middle" class="mono t3" font-size="12">0.5</text>
+<line x1="532.5" y1="194" x2="532.5" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="532.5" y="438" text-anchor="middle" class="mono t3" font-size="12">0.75</text>
+<line x1="650.0" y1="194" x2="650.0" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="650.0" y="438" text-anchor="middle" class="mono t3" font-size="12">1</text>
+<text x="84" y="232" class="sans t2" font-size="15">IoU</text>
+<path d="M180.0 206.0 H389.9 Q393.9 206.0 393.9 210.0 V222.0 Q393.9 226.0 389.9 226.0 H180.0 Z" fill="#4c8dff"/>
+<path d="M180.0 228.0 H449.1 Q453.1 228.0 453.1 232.0 V244.0 Q453.1 248.0 449.1 248.0 H180.0 Z" fill="#cf7a26"/>
+<text x="401.9" y="221" class="mono t2" font-size="13">0.455</text>
+<text x="461.1" y="243" class="mono t1" font-size="13">0.581</text>
+<text x="84" y="316" class="sans t2" font-size="15">F1</text>
+<path d="M180.0 290.0 H470.2 Q474.2 290.0 474.2 294.0 V306.0 Q474.2 310.0 470.2 310.0 H180.0 Z" fill="#4c8dff"/>
+<path d="M180.0 312.0 H521.5 Q525.5 312.0 525.5 316.0 V328.0 Q525.5 332.0 521.5 332.0 H180.0 Z" fill="#cf7a26"/>
+<text x="482.2" y="305" class="mono t2" font-size="13">0.626</text>
+<text x="533.5" y="327" class="mono t1" font-size="13">0.735</text>
+<text x="84" y="400" class="sans t2" font-size="15">Recall</text>
+<path d="M180.0 374.0 H572.7 Q576.7 374.0 576.7 378.0 V390.0 Q576.7 394.0 572.7 394.0 H180.0 Z" fill="#4c8dff"/>
+<path d="M180.0 396.0 H580.2 Q584.2 396.0 584.2 400.0 V412.0 Q584.2 416.0 580.2 416.0 H180.0 Z" fill="#cf7a26"/>
+<text x="584.7" y="389" class="mono t2" font-size="13">0.844</text>
+<text x="592.2" y="411" class="mono t1" font-size="13">0.860</text>
+<rect x="840" y="126" width="700" height="346" rx="14" fill="#0f1114" stroke="#23272e"/>
+<text x="864" y="162" class="sans t1" font-size="20" font-weight="700">Dense urban</text>
+<text x="999" y="162" class="sans t3" font-size="15">Boston Back Bay · 15.9 % road</text>
+<line x1="960.0" y1="194" x2="960.0" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="960.0" y="438" text-anchor="middle" class="mono t3" font-size="12">0</text>
+<line x1="1077.5" y1="194" x2="1077.5" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="1077.5" y="438" text-anchor="middle" class="mono t3" font-size="12">0.25</text>
+<line x1="1195.0" y1="194" x2="1195.0" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="1195.0" y="438" text-anchor="middle" class="mono t3" font-size="12">0.5</text>
+<line x1="1312.5" y1="194" x2="1312.5" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="1312.5" y="438" text-anchor="middle" class="mono t3" font-size="12">0.75</text>
+<line x1="1430.0" y1="194" x2="1430.0" y2="416" stroke="#1f2329" stroke-width="1"/>
+<text x="1430.0" y="438" text-anchor="middle" class="mono t3" font-size="12">1</text>
+<text x="864" y="232" class="sans t2" font-size="15">IoU</text>
+<path d="M960.0 206.0 H1002.1 Q1006.1 206.0 1006.1 210.0 V222.0 Q1006.1 226.0 1002.1 226.0 H960.0 Z" fill="#4c8dff"/>
+<path d="M960.0 228.0 H1168.9 Q1172.9 228.0 1172.9 232.0 V244.0 Q1172.9 248.0 1168.9 248.0 H960.0 Z" fill="#cf7a26"/>
+<text x="1014.1" y="221" class="mono t2" font-size="13">0.098</text>
+<text x="1180.9" y="243" class="mono t1" font-size="13">0.453</text>
+<text x="1516" y="236" text-anchor="end" class="sans t1" font-size="22" font-weight="700">4.6×</text>
+<text x="864" y="316" class="sans t2" font-size="15">F1</text>
+<path d="M960.0 290.0 H1039.7 Q1043.7 290.0 1043.7 294.0 V306.0 Q1043.7 310.0 1039.7 310.0 H960.0 Z" fill="#4c8dff"/>
+<path d="M960.0 312.0 H1249.3 Q1253.3 312.0 1253.3 316.0 V328.0 Q1253.3 332.0 1249.3 332.0 H960.0 Z" fill="#cf7a26"/>
+<text x="1051.7" y="305" class="mono t2" font-size="13">0.178</text>
+<text x="1261.3" y="327" class="mono t1" font-size="13">0.624</text>
+<text x="1516" y="320" text-anchor="end" class="sans t1" font-size="22" font-weight="700">3.5×</text>
+<text x="864" y="400" class="sans t2" font-size="15">Recall</text>
+<path d="M960.0 374.0 H1006.8 Q1010.8 374.0 1010.8 378.0 V390.0 Q1010.8 394.0 1006.8 394.0 H960.0 Z" fill="#4c8dff"/>
+<path d="M960.0 396.0 H1250.7 Q1254.7 396.0 1254.7 400.0 V412.0 Q1254.7 416.0 1250.7 416.0 H960.0 Z" fill="#cf7a26"/>
+<text x="1018.8" y="389" class="mono t2" font-size="13">0.108</text>
+<text x="1262.7" y="411" class="mono t1" font-size="13">0.627</text>
+<text x="1516" y="404" text-anchor="end" class="sans t1" font-size="22" font-weight="700">5.8×</text>
+<text x="60" y="510" class="sans t3" font-size="15">Same regions, same pipeline, same threshold: only the backend differs. U-Net: ResNet-34 encoder, 135 tiles, 9.9 min on an RTX 5050.</text>
+</svg>

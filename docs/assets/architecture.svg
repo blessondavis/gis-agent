@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-labelledby="t d">
+  <title id="t">How gis-agent works</title>
+  <desc id="d">An LLM agent calls MCP tools that drive a six-stage pipeline: region, chip, segment, stitch, vectorise and judge. The judge stage feeds back into segmentation through refine_area, sweep_threshold and repair_geometry.</desc>
+  <defs>
+    <style>
+      .sans { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; }
+      .mono { font-family: Consolas, SFMono-Regular, Menlo, 'Liberation Mono', monospace; }
+      .t1 { fill: #edeff2; } .t2 { fill: #a8b0ba; } .t3 { fill: #6b7480; }
+    </style>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#6b7480"/>
+    </marker>
+    <marker id="arrA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#ffb84d"/>
+    </marker>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 H0 V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+    <linearGradient id="agentFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0.06"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="760" rx="18" fill="#08090b"/>
+  <rect width="1600" height="760" rx="18" fill="url(#grid)"/>
+
+  <!-- heading -->
+  <text x="60" y="62" class="sans" font-size="16" font-weight="600" letter-spacing="3" fill="#4fe3e8">HOW IT WORKS</text>
+  <text x="60" y="98" class="sans t1" font-size="28" font-weight="700">An agent drives the pipeline, measures the result, and re-traces what it got wrong</text>
+
+  <!-- agent -->
+  <rect x="560" y="132" width="480" height="92" rx="14" fill="url(#agentFill)" stroke="#7c5cff" stroke-width="1.5"/>
+  <circle cx="612" cy="178" r="20" fill="none" stroke="#7c5cff" stroke-width="2"/>
+  <circle cx="612" cy="178" r="7" fill="#7c5cff"/>
+  <text x="648" y="171" class="sans t1" font-size="24" font-weight="700">LLM agent</text>
+  <text x="648" y="198" class="sans t2" font-size="15">any OpenAI-compatible model with tool calling</text>
+
+  <!-- fan-out of tool calls -->
+  <g fill="none" stroke="#7c5cff" stroke-opacity="0.55" stroke-width="1.5" stroke-dasharray="5 5">
+    <path d="M800 224 C800 262, 170 262, 170 306"/>
+    <path d="M800 224 C800 262, 422 262, 422 306"/>
+    <path d="M800 224 C800 262, 674 262, 674 306"/>
+    <path d="M800 224 C800 262, 926 262, 926 306"/>
+    <path d="M800 224 C800 262, 1178 262, 1178 306"/>
+    <path d="M800 224 C800 262, 1430 262, 1430 306"/>
+  </g>
+  <rect x="728" y="246" width="144" height="26" rx="13" fill="#08090b" stroke="#7c5cff" stroke-opacity="0.6"/>
+  <text x="800" y="264" text-anchor="middle" class="mono" font-size="13" fill="#b9a8ff">19 MCP tools</text>
+
+  <!-- stage cards: x = 60 + i*252, w = 220 -->
+  <g class="sans">
+    <!-- 01 -->
+    <rect x="60" y="306" width="220" height="172" rx="12" fill="#0f1114" stroke="#23272e"/>
+    <rect x="60" y="306" width="220" height="3" rx="1.5" fill="#4fe3e8"/>
+    <text x="80" y="340" class="mono" font-size="14" fill="#4fe3e8">01</text>
+    <text x="80" y="370" class="t1" font-size="22" font-weight="700">Region</text>
+    <text x="80" y="398" class="t2" font-size="14.5">Contiguous tiles, found</text>
+    <text x="80" y="418" class="t2" font-size="14.5">from filename grid keys</text>
+    <text x="80" y="458" class="mono t3" font-size="13">mosaic.tif</text>
+
+    <!-- 02 -->
+    <rect x="312" y="306" width="220" height="172" rx="12" fill="#0f1114" stroke="#23272e"/>
+    <rect x="312" y="306" width="220" height="3" rx="1.5" fill="#4fe3e8"/>
+    <text x="332" y="340" class="mono" font-size="14" fill="#4fe3e8">02</text>
+    <text x="332" y="370" class="t1" font-size="22" font-weight="700">Chip</text>
+    <text x="332" y="398" class="t2" font-size="14.5">1024 px chips with</text>
+    <text x="332" y="418" class="t2" font-size="14.5">128 px of overlap</text>
+    <text x="332" y="458" class="mono t3" font-size="13">chips/*.tif</text>
+
+    <!-- 03 -->
+    <rect x="564" y="306" width="220" height="172" rx="12" fill="#0f1114" stroke="#ffb84d" stroke-opacity="0.55"/>
+    <rect x="564" y="306" width="220" height="3" rx="1.5" fill="#ffb84d"/>
+    <text x="584" y="340" class="mono" font-size="14" fill="#ffb84d">03</text>
+    <text x="584" y="370" class="t1" font-size="22" font-weight="700">Segment</text>
+    <text x="584" y="398" class="t2" font-size="14.5">SAM 3 text prompt, or</text>
+    <text x="584" y="418" class="t2" font-size="14.5">the trained U-Net</text>
+    <text x="584" y="458" class="mono t3" font-size="13">conf/*.npy</text>
+
+    <!-- 04 -->
+    <rect x="816" y="306" width="220" height="172" rx="12" fill="#0f1114" stroke="#23272e"/>
+    <rect x="816" y="306" width="220" height="3" rx="1.5" fill="#4fe3e8"/>
+    <text x="836" y="340" class="mono" font-size="14" fill="#4fe3e8">04</text>
+    <text x="836" y="370" class="t1" font-size="22" font-weight="700">Stitch</text>
+    <text x="836" y="398" class="t2" font-size="14.5">Feathered blend into</text>
+    <text x="836" y="418" class="t2" font-size="14.5">one confidence raster</text>
+    <text x="836" y="458" class="mono t3" font-size="13">confidence.tif</text>
+
+    <!-- 05 -->
+    <rect x="1068" y="306" width="220" height="172" rx="12" fill="#0f1114" stroke="#23272e"/>
+    <rect x="1068" y="306" width="220" height="3" rx="1.5" fill="#4fe3e8"/>
+    <text x="1088" y="340" class="mono" font-size="14" fill="#4fe3e8">05</text>
+    <text x="1088" y="370" class="t1" font-size="22" font-weight="700">Vectorise</text>
+    <text x="1088" y="398" class="t2" font-size="14.5">Despeckle, fill holes,</text>
+    <text x="1088" y="418" class="t2" font-size="14.5">skeletonise</text>
+    <text x="1088" y="458" class="mono t3" font-size="13">roads.geojson</text>
+
+    <!-- 06 -->
+    <rect x="1320" y="306" width="220" height="172" rx="12" fill="#0f1114" stroke="#4ade80" stroke-opacity="0.55"/>
+    <rect x="1320" y="306" width="220" height="3" rx="1.5" fill="#4ade80"/>
+    <text x="1340" y="340" class="mono" font-size="14" fill="#4ade80">06</text>
+    <text x="1340" y="370" class="t1" font-size="22" font-weight="700">Judge</text>
+    <text x="1340" y="398" class="t2" font-size="14.5">Metrics, VLM critic,</text>
+    <text x="1340" y="418" class="t2" font-size="14.5">network topology</text>
+    <text x="1340" y="458" class="mono t3" font-size="13">verdict</text>
+  </g>
+
+  <!-- forward arrows -->
+  <g stroke="#6b7480" stroke-width="1.5" marker-end="url(#arr)">
+    <line x1="284" y1="392" x2="306" y2="392"/>
+    <line x1="536" y1="392" x2="558" y2="392"/>
+    <line x1="788" y1="392" x2="810" y2="392"/>
+    <line x1="1040" y1="392" x2="1062" y2="392"/>
+    <line x1="1292" y1="392" x2="1314" y2="392"/>
+  </g>
+
+  <!-- feedback loop -->
+  <path d="M1430 478 V530 Q1430 548 1412 548 H692 Q674 548 674 530 V486" fill="none" stroke="#ffb84d" stroke-width="2" marker-end="url(#arrA)"/>
+  <rect x="822" y="530" width="456" height="36" rx="18" fill="#1a1409" stroke="#ffb84d" stroke-opacity="0.7"/>
+  <text x="1050" y="554" text-anchor="middle" class="mono" font-size="14.5" fill="#ffb84d">refine_area · sweep_threshold · repair_geometry</text>
+  <text x="1050" y="590" text-anchor="middle" class="sans t2" font-size="15">re-run only the weak chips, never the whole region</text>
+
+  <!-- design facts -->
+  <line x1="60" y1="628" x2="1540" y2="628" stroke="#23272e"/>
+  <g class="sans">
+    <circle cx="68" cy="668" r="5" fill="#4ade80"/>
+    <text x="84" y="674" class="t1" font-size="17" font-weight="600">Headless QGIS</text>
+    <text x="84" y="700" class="t2" font-size="14.5">qgis_process CLI, no desktop GUI.</text>
+    <text x="84" y="720" class="t2" font-size="14.5">712 algorithms callable directly.</text>
+
+    <circle cx="568" cy="668" r="5" fill="#4fe3e8"/>
+    <text x="584" y="674" class="t1" font-size="17" font-weight="600">Confidence, not masks</text>
+    <text x="584" y="700" class="t2" font-size="14.5">Float maps survive stitching, so the</text>
+    <text x="584" y="720" class="t2" font-size="14.5">threshold is swept without re-inference.</text>
+
+    <circle cx="1068" cy="668" r="5" fill="#ffb84d"/>
+    <text x="1084" y="674" class="t1" font-size="17" font-weight="600">Swappable backends</text>
+    <text x="1084" y="700" class="t2" font-size="14.5">Zero-shot SAM 3, or a U-Net trained in</text>
+    <text x="1084" y="720" class="t2" font-size="14.5">10 minutes. Nothing else changes.</text>
+  </g>
+</svg>
