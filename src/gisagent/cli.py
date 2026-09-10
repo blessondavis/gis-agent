@@ -207,15 +207,19 @@ def run_pipeline(
     upscale: int = typer.Option(1, help="upsample chips before inference"),
     chip_size: int = typer.Option(1024),
     overlap: int = typer.Option(128),
+    model: str = typer.Option("sam3", help="sam3 (zero-shot) | unet (trained)"),
+    checkpoint: str = typer.Option("", help="unet checkpoint path"),
 ) -> None:
     """Run tile -> segment -> stitch -> vectorize -> evaluate on a job."""
     from gisagent.pipeline import get_job
-    from gisagent.segment.sam3 import Sam3RoadSegmenter
+    from gisagent.segment import make_segmenter
 
     job = get_job(job_id)
     console.print(job.tile(chip_size=chip_size, overlap=overlap))
 
-    segmenter = Sam3RoadSegmenter()
+    kwargs = {"checkpoint": checkpoint} if (model == "unet" and checkpoint) else {}
+    segmenter = make_segmenter(model, **kwargs)
+    console.print(f"backend: [bold]{model}[/]")
 
     # No console.status() spinner around this: its background render thread
     # segfaults the interpreter when CUDA work runs underneath it on Windows.

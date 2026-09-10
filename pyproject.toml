@@ -44,6 +44,9 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.9.0",
     "python-dotenv>=1.0.1",
+
+    # --- supervised backend ---
+    "segmentation-models-pytorch>=0.4.0",
 ]
 
 [project.optional-dependencies]
