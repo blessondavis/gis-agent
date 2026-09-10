@@ -8,6 +8,7 @@
   <a href="https://huggingface.co/facebook/sam3"><img src="https://img.shields.io/badge/SAM%203-text--prompted-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="SAM 3"></a>
   <a href="https://qgis.org"><img src="https://img.shields.io/badge/QGIS-headless-589632?style=for-the-badge&logo=qgis&logoColor=white" alt="QGIS headless"></a>
   <a href="https://pytorch.org"><img src="https://img.shields.io/badge/PyTorch-cu128-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white" alt="PyTorch"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-4fe3e8?style=for-the-badge" alt="License: PolyForm Noncommercial 1.0.0"></a>
   <a href="https://github.com/blessondavis/gis-agent/stargazers"><img src="https://img.shields.io/github/stars/blessondavis/gis-agent?style=for-the-badge&logo=github&color=ffb84d" alt="GitHub stars"></a>
 </p>
 
@@ -449,6 +450,17 @@ when the tiles it fetched are mostly padding.
 [Massachusetts Roads Dataset](https://www.cs.toronto.edu/~vmnih/data/) (Mnih,
 2013): 1,171 aerial tiles, GeoTIFF in EPSG:26986 at 1 m/px, 1500 × 1500 px, with
 ground-truth road masks. Released for research use.
+
+## 📜 License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). You're free to use, modify and share
+this for research, study, personal projects, and by non-profits, schools and
+public bodies. **Commercial use needs a separate license**, so
+[open an issue](https://github.com/blessondavis/gis-agent/issues) to ask.
+
+The license covers this repository's code only. The SAM 3 weights come under
+[Meta's SAM license](https://huggingface.co/facebook/sam3), and the Massachusetts
+Roads data is released for research use.
 
 ## ⭐ Star history
 

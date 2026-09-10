@@ -3,6 +3,8 @@ name = "gis-agent"
 version = "0.1.0"
 description = "Agentic road annotation on satellite imagery: SAM 3 segmentation orchestrated over MCP tools with headless QGIS/GDAL vectorization."
 readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE.md"]
 requires-python = ">=3.12,<3.14"
 
 dependencies = [
