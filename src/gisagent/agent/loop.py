@@ -33,6 +33,7 @@ Events are typed (``plan``, ``tool_call``/``tool_result`` paired by call id,
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -54,10 +55,16 @@ How to work
 - For anything beyond a single question, first call update_plan with 3-6 short
   steps, and keep it current (in_progress / done) as you go. The person sees it.
 - Say what you are about to do in one short sentence before doing it.
-- Measure after you change anything: evaluate_result when ground truth exists,
-  check_topology when it does not. The harness will not let you finish while
-  the output has changed since your last measurement.
-- Only quote numbers a tool returned in this conversation. The harness checks.
+- The harness measures every change to the network itself -- against ground
+  truth when there is some, else by expected precision/recall under the
+  model's confidence -- and appends the score to the tool result. Use that
+  score to decide what to keep. It also keeps the best result: if a change made
+  things worse, call restore_best.
+- When the person says what matters ("wrong roads are worse", "don't miss
+  any"), call set_objective so the harness scores by that.
+- Only quote numbers a tool or the harness returned. The harness checks.
+- A call refused with "[harness rule]" tells you why and what to do instead.
+  Do that; do not retry the same call.
 
 Pipeline
   tile_region -> segment_chips -> stitch_result -> vectorize_result -> measure
@@ -72,8 +79,11 @@ Pipeline
   when missing roads are worse (they will review and delete), else
   "balanced". Judge success by the same measure: correctness is the share of
   drawn roads that are real, completeness the share of real roads found.
-- refine_area re-runs one area only. Use it when the person points at a bad
-  area (they may attach a bbox_wgs84). Change something for the rework.
+- refine_area re-runs the model on one area (the person may attach a
+  bbox_wgs84). With the U-Net it only changes anything with backend='sam3':
+  the U-Net is deterministic at native scale and upscaling it was measured to
+  make results worse. For most fixes, try_candidates -- or the person's own
+  edits via suggest_missing_roads -- are the better lever.
 
 The person's edits
 - They draw, reshape and delete roads in the map. Their edits are layered over
@@ -116,6 +126,7 @@ VERIFYING = frozenset({
 })
 
 MAX_GATES = 2            # stop-gate continuations per turn
+MAX_GATES_TASK = 8       # an autonomous task is sent back until it is done, within reason
 SPILL_CHARS = 6000       # tool results larger than this go to disk
 HARNESS_PREFIX = "[harness]"
 
@@ -149,6 +160,43 @@ PLAN_TOOL = {
         },
     },
 }
+
+
+RESTORE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "restore_best",
+        "description": (
+            "Put back the best-scoring result the harness has measured in this task "
+            "(mask, centrelines and confidence map). Use it when a change made the "
+            "score worse."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+OBJECTIVE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_objective",
+        "description": (
+            "Change what 'better' means for this job, when the person states a "
+            "preference: 'precision' if a wrong road is worse than a missing one, "
+            "'recall' if a missing road is worse, else 'balanced'. The harness "
+            "re-scores everything measured so far under the new objective."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "objective": {"type": "string", "enum": ["balanced", "precision", "recall"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["objective"],
+        },
+    },
+}
+
+HARNESS_TOOLS = {"update_plan", "restore_best", "set_objective"}
 
 
 def _utc() -> str:
@@ -228,6 +276,10 @@ def summarise(tool: str, result: Any) -> str:
                    f"the person, {s.get('n_ops', 0)} edits")
             sc = (result.get("score") or {}).get("overall")
             return out + (f", completeness {pct(sc['completeness'])}" if sc else "")
+        if tool == "restore_best":
+            return f"restored the best result ({result.get('score', 0):.3f})"
+        if tool == "set_objective":
+            return f"objective is now {result.get('objective')}"
         if tool == "suggest_missing_roads":
             return f"{result.get('gap', 0)} gaps, {result.get('missed', 0)} possible roads"
         if tool == "create_region_job":
@@ -520,13 +572,25 @@ class RoadAgent:
         job_id: str | None = None,
         context: str = "",
         mode: str = "work",
+        spec=None,
     ) -> AsyncIterator[AgentEvent]:
         """Handle one user turn, calling tools until the agent replies.
 
-        ``mode`` is "work" (all tools) or "plan" (read-only tools; the model
-        proposes a plan and stops).
+        ``mode``:
+
+        * "work" -- a conversation turn. All tools; the harness measures every
+          change and keeps the best, but the agent decides when it is done.
+        * "plan" -- read-only tools; the model proposes a plan and stops.
+        * "task" -- the agent annotates the region on its own. The rules in
+          :mod:`gisagent.agent.rules` are enforced: order, budgets, no
+          repeats, plateau, and a definition of done it cannot finish
+          without. Ends with a report whose verdict comes from the checks.
+
+        ``spec`` (a :class:`~gisagent.agent.rules.TaskSpec`) sets the task's
+        objective, targets and budgets.
         """
         from gisagent import pipeline
+        from gisagent.agent import rules
 
         client = self._client()
         job = None
@@ -535,6 +599,22 @@ class RoadAgent:
                 job = pipeline.get_job(job_id)
             except FileNotFoundError:
                 job = None
+        task = mode == "task"
+        t_start = time.perf_counter()
+
+        # The ledger persists with the job: a task starts a fresh one; a
+        # conversation turn continues whatever is there (so keep-best and the
+        # score history survive between turns).
+        ledger = None
+        if job is not None:
+            ledger = None if task else rules.Ledger.load(job)
+            if ledger is None:
+                ledger = rules.Ledger(spec=spec or rules.TaskSpec())
+                ledger.save(job)
+            elif spec is not None:
+                ledger.spec = spec
+                ledger.save(job)
+            ledger.turn_start = len(ledger.calls)
 
         try:
             listed = await self._list_tools()
@@ -542,7 +622,14 @@ class RoadAgent:
             yield AgentEvent(type="error", text=f"MCP unavailable: {exc}", ok=False)
             return
 
-        tools = [PLAN_TOOL] + [
+        # A conversation is bound to one job. The harness fills in job_id on
+        # every call rather than trusting the model to copy a 22-character id:
+        # a live run mistyped it, and the failure cost a detour.
+        takes_job = {t.name for t in listed
+                     if "job_id" in ((t.input_schema or {}).get("properties") or {})}
+
+        extra = [RESTORE_TOOL, OBJECTIVE_TOOL] if mode != "plan" and job is not None else []
+        tools = [PLAN_TOOL] + extra + [
             {
                 "type": "function",
                 "function": {
@@ -565,18 +652,30 @@ class RoadAgent:
         turn_start = len(conversation.messages)
         dirty = False            # the live result changed since the last measurement
         gates = 0
+        calls_since_gate = 0     # tool calls since the harness last sent the agent back
+        idle_gates = 0           # consecutive send-backs answered with no action
+        max_gates = MAX_GATES_TASK if task else MAX_GATES
         spill_dir = job.dir / "spill" if job else None
+        extra_system = PLAN_MODE if mode == "plan" else ""
+        if task and job is not None:
+            extra_system = rules.rules_text(ledger.spec, labelled=job.has_truth())
+
+        def finish_report():
+            if task and job is not None:
+                rep = rules.write_report(job, ledger, duration_s=time.perf_counter() - t_start)
+                return AgentEvent(type="report", result=rep, ok=rep["status"] in (
+                    "complete", "best_effort"), text=f"{rep['status']}: {rep['reason']}")
+            return None
 
         for step in range(1, self.max_steps + 1):
             if job is not None:
                 job = pipeline.get_job(job.job_id)     # the MCP process changed it
-                context = working_memory(job)
+                context = working_memory(job) + ledger_memory(job, ledger, task=task)
             t0 = time.perf_counter()
             try:
                 response = await client.chat.completions.create(
                     model=self.model,
-                    messages=conversation.for_llm(
-                        context, PLAN_MODE if mode == "plan" else ""),
+                    messages=conversation.for_llm(context, extra_system),
                     tools=tools,
                     tool_choice="auto",
                     temperature=0.2,
@@ -585,6 +684,9 @@ class RoadAgent:
             except Exception as exc:
                 yield AgentEvent(type="error", step=step, ok=False,
                                  text=f"LLM call failed: {exc}")
+                rep = finish_report()
+                if rep:
+                    yield rep
                 return
 
             msg = response.choices[0].message
@@ -628,8 +730,35 @@ class RoadAgent:
                     problems.append(
                         f"your reply quotes {', '.join(bad)}, which no tool returned. "
                         "Check with a tool or correct the numbers.")
-                if problems and gates < MAX_GATES:
+                if task and job is not None:
+                    # the definition of done, decided by code
+                    job = pipeline.get_job(job.job_id)
+                    unmet = await asyncio.to_thread(rules.unmet, job, ledger)
+                    idle_gates = idle_gates + 1 if (unmet and gates and calls_since_gate == 0) else 0
+                    if idle_gates >= 2:
+                        # Sent back twice and did nothing either time: another
+                        # identical demand would just burn steps. Stop, and let
+                        # the report say what was left undone.
+                        yield AgentEvent(type="verify", step=step, ok=False,
+                                         text="stopped: the agent made no further progress "
+                                              "after being sent back. Unmet: " + " | ".join(unmet))
+                        rep = finish_report()
+                        if rep:
+                            yield rep
+                        yield AgentEvent(type="done", step=step, text=content)
+                        return
+                    problems += unmet
+                elif ledger is not None and ledger.worse_than_best():
+                    # even in conversation: never leave the person a worse result
+                    # than one already measured
+                    live, ref = ledger.last_compare
+                    problems.append(
+                        f"the live result scores {live:.3f}, below the best measured "
+                        f"{ref:.3f} (after {ledger.best.after}), compared like for like. "
+                        "restore_best, or tell the person why not.")
+                if problems and gates < max_gates:
                     gates += 1
+                    calls_since_gate = 0
                     note = f"{HARNESS_PREFIX} Before you finish: " + " Also, ".join(problems)
                     conversation.messages.append({"role": "user", "content": note})
                     conversation.save()
@@ -645,19 +774,34 @@ class RoadAgent:
                                           "quoted scores match tool results")
                 if mode == "plan":
                     yield AgentEvent(type="plan_ready", step=step, text=content)
+                rep = finish_report()
+                if rep:
+                    yield rep
                 yield AgentEvent(type="done", step=step, text=content)
                 return
 
             for call in calls:
                 name = call.function.name
+                calls_since_gate += 1
                 try:
                     args = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                if job is not None and name in takes_job:
+                    args["job_id"] = job.job_id
 
                 yield AgentEvent(type="tool_call", step=step, tool=name,
                                  call_id=call.id, args=args)
                 ts = time.perf_counter()
+
+                if job is not None:
+                    job = pipeline.get_job(job.job_id)
+                state_before = rules.state_signature(job)
+                net_before = _net_signature(job)
+                refused = False
+                measured = None
 
                 if name == "update_plan":
                     try:
@@ -672,21 +816,66 @@ class RoadAgent:
                 elif mode == "plan" and name not in READ_ONLY:
                     parsed = {"ok": False, "error": "plan mode: this tool changes the "
                               "result; propose it in the plan instead"}
-                else:
+                    refused = True
+                elif name == "set_objective" and ledger is not None:
+                    parsed = _set_objective(job, ledger, args)
+                elif name == "restore_best" and ledger is not None:
                     try:
-                        parsed = await self._call_tool(name, args)
-                    except Exception as exc:
+                        parsed = {"ok": True, **await asyncio.to_thread(
+                            rules.restore_best, job, ledger)}
+                    except RuntimeError as exc:
                         parsed = {"ok": False, "error": str(exc)}
+                else:
+                    reason = rules.precheck(name, args, job, ledger, task=task)
+                    if reason:
+                        parsed = {"ok": False, "error": f"[harness rule] {reason}"}
+                        refused = True
+                    else:
+                        if name == "try_candidates" and ledger is not None:
+                            # the task's objective, not whatever the model typed
+                            if args.get("objective") not in (None, ledger.spec.objective):
+                                args["objective_requested"] = args["objective"]
+                            args["objective"] = ledger.spec.objective
+                        call_args = {k: v for k, v in args.items() if k != "objective_requested"}
+                        try:
+                            parsed = await self._call_tool(name, call_args)
+                        except Exception as exc:
+                            parsed = {"ok": False, "error": str(exc)}
 
                 ok = not (isinstance(parsed, dict) and parsed.get("ok") is False)
-                if ok and name in MUTATING:
+                if name not in ("update_plan",):
+                    rules.note_call(ledger, name, args, ok, refused=refused, state=state_before)
+                if ok and name in MUTATING | {"restore_best"}:
                     # tools that measure their own output (refine_area and
                     # apply_candidate with labels) settle the debt themselves
                     dirty = not (isinstance(parsed, dict) and parsed.get("metrics"))
                 elif ok and name in VERIFYING:
                     dirty = False
 
+                if ok and job is not None and ledger is not None:
+                    job = pipeline.get_job(job.job_id)
+                    if name == "try_candidates":
+                        ledger.candidate_versions.append(rules.confidence_version(job))
+                    if name == "suggest_missing_roads":
+                        ledger.suggested_after = len(ledger.measurements) - 1
+                    # the harness measures every change to the network itself
+                    if name in rules.CHANGES_RESULT and _net_signature(job) != net_before \
+                            or name in ("apply_candidate", "restore_best"):
+                        measured = await asyncio.to_thread(
+                            rules.record, job, ledger, _describe(name, args))
+                        if measured is not None:
+                            dirty = False
+                    ledger.save(job)
+                if refused:
+                    yield AgentEvent(type="rule", step=step, tool=name, call_id=call.id,
+                                     ok=False, text=parsed["error"])
+
                 text, spilled = for_model(parsed, spill_dir, f"{step:03d}-{name}-{call.id[-6:]}")
+                if measured is not None:
+                    note = _measure_note(measured, ledger)
+                    text = f"{text}\n{HARNESS_PREFIX} {note}"
+                    yield AgentEvent(type="measure", step=step, call_id=call.id,
+                                     result=_measure_dict(measured, ledger), text=note)
                 yield AgentEvent(
                     type="tool_result", step=step, tool=name, call_id=call.id,
                     args=args, result=parsed, ok=ok,
@@ -701,3 +890,109 @@ class RoadAgent:
 
         yield AgentEvent(type="error", step=self.max_steps, ok=False,
                          text=f"stopped after {self.max_steps} steps")
+        rep = finish_report()
+        if rep:
+            yield rep
+
+
+# --------------------------------------------------------------------------- #
+# harness helpers for the rules
+# --------------------------------------------------------------------------- #
+
+def _net_signature(job) -> str:
+    """Changes when the delivered network could have changed."""
+    if job is None:
+        return ""
+    parts = []
+    for p in (job.vector_path, job.edits_path):
+        try:
+            st = p.stat()
+            parts.append(f"{st.st_size}.{st.st_mtime_ns}")
+        except FileNotFoundError:
+            parts.append("-")
+    return "|".join(parts)
+
+
+def _describe(tool: str, args: dict) -> str:
+    """A short label for the ledger: which call produced this state."""
+    keep = {k: v for k, v in args.items()
+            if k not in ("job_id", "note", "objective_requested") and v not in (None, "", [])}
+    if tool == "try_candidates":
+        keep.pop("variants", None)
+    s = ", ".join(f"{k}={v}" for k, v in keep.items())
+    return f"{tool}({s})"[:120]
+
+
+def _measure_dict(m, ledger) -> dict:
+    return {"score": m.score, "precision": m.precision, "recall": m.recall,
+            "basis": m.basis, "objective": ledger.spec.objective, "best": m.best,
+            "best_score": ledger.best.score if ledger.best else None,
+            "km": m.km, "after": m.after}
+
+
+def _measure_note(m, ledger) -> str:
+    what = ("correctness / completeness vs ground truth" if m.basis == "ground truth"
+            else "expected precision / recall under the model's confidence")
+    best = ledger.best
+    if m.best:
+        verdict = "new best"
+    else:
+        live, ref = ledger.last_compare or (m.score, best.score)
+        how = ("" if ledger.comparable(m, best) else
+               " (the model was re-run, so both were judged under the best result's "
+               "confidence map)")
+        verdict = (f"not better than the best: {live:.3f} vs {ref:.3f}{how}, best after "
+                   f"{best.after}" + ("; restore_best if you cannot beat it"
+                                      if ledger.worse_than_best() else ""))
+    return (f"measured: {ledger.spec.objective} score {m.score:.3f} "
+            f"(precision {m.precision:.3f}, recall {m.recall:.3f}; {what}), "
+            f"{m.km} km. {verdict}.")
+
+
+def _set_objective(job, ledger, args: dict) -> dict:
+    from gisagent.agent.rules import OBJECTIVES, TaskSpec
+    from gisagent.evaluate.network import f_beta
+
+    obj = args.get("objective")
+    if obj not in OBJECTIVES:
+        return {"ok": False, "error": f"objective must be one of {OBJECTIVES}"}
+    ledger.spec = TaskSpec(**{**ledger.spec.to_dict(), "objective": obj})
+    # re-score history under the new objective; precision/recall are stored
+    for m in ledger.measurements:
+        m.score = round(f_beta(m.precision, m.recall, ledger.spec.beta), 4)
+        m.best = False
+    if ledger.measurements:
+        cur = ledger.measurements[-1]
+        comparable = [i for i, m in enumerate(ledger.measurements) if ledger.comparable(m, cur)]
+        ledger.best_index = max(comparable, key=lambda i: ledger.measurements[i].score)
+        ledger.measurements[ledger.best_index].best = True
+    ledger.save(job)
+    return {"ok": True, "objective": obj, "reason": args.get("reason", ""),
+            "best_score": ledger.best.score if ledger.best else None}
+
+
+def ledger_memory(job, ledger, *, task: bool) -> str:
+    """The rules' state, for the working memory the model reads each step."""
+    if ledger is None:
+        return ""
+    from gisagent.agent import rules
+
+    s = ledger.spec
+    lines = [f"objective: {s.objective}"]
+    cur, best = ledger.latest, ledger.best
+    if cur:
+        lines.append(f"harness score now {cur.score:.3f} ({cur.basis}); best {best.score:.3f} "
+                     f"after {best.after}" if best else f"harness score now {cur.score:.3f}")
+        if ledger.worse_than_best():
+            lines.append("the live result is WORSE than the best: restore_best")
+    if task:
+        lines.append("budgets used: " + ", ".join(
+            f"{t} {ledger.count(t)}/{getattr(s, k)}" for t, k in rules.BUDGETED.items()))
+        if ledger.plateaued():
+            lines.append("PLATEAU reached: stop improving, hand off and finish")
+        left = rules.unmet(job, ledger)
+        if left:
+            lines.append("not done yet: " + " | ".join(left))
+        else:
+            lines.append("definition of done: all met -- finish with your report")
+    return "\n" + "\n".join(lines)

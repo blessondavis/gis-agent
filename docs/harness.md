@@ -30,6 +30,87 @@ the only copy of the model on an 8 GB GPU, so parallel tool calls would just
 queue. The parallelism is inside `try_candidates`, which scores its variants
 on CPU threads.
 
+## Autonomous mode: rules the harness enforces
+
+`gisagent annotate <job>` (or **Annotate autonomously** in the web app) hands
+the agent a whole region and walks away. Prompt text alone doesn't hold up for
+that. A model will skip a step, repeat a failing call, stop at the first
+plausible result, or finish on a number it misremembered. So every rule in
+[`agent/rules.py`](../src/gisagent/agent/rules.py) exists twice: once as text
+the model reads, and once as code the harness runs on every call and before
+every attempt to finish.
+
+| rule | enforced by |
+| --- | --- |
+| **Order.** tile → segment → stitch → vectorise → candidates → improve → hand off | A call whose prerequisites are missing is refused with the step that is actually next, before any GPU time is spent. `evaluate_result` on unlabelled imagery is refused with what to use instead. |
+| **The harness measures.** | After every change to the network, the harness scores it itself under the task's objective. It uses ground truth when there is some, else expected precision and recall under the model's confidence. The score is appended to the tool result, so the model never has to remember to measure. |
+| **Keep the best.** | The best-scoring result is snapshotted. The agent can't finish below it, and `restore_best` brings it back. In conversation mode too. After a model re-run, the new network is judged under the best result's confidence map (see below). |
+| **Measured domain facts.** | Upscaled U-Net runs are refused (they hurt every time they were measured), and so are native-scale U-Net area reworks, which can't change anything. The refusal carries the evidence and the lever to use instead. |
+| **Scope.** | A conversation is bound to its job. The harness fills in `job_id` on every call, and creating another region is refused. |
+| **The task's objective wins.** | `try_candidates` is always run with the task's objective, whatever the model typed. `set_objective` changes it explicitly and re-scores the history. |
+| **Budgets.** | Whole-region model runs (2), area reworks (4) and candidate rounds (3) per task. A call over budget is refused. |
+| **No loops.** | The same call with the same arguments *on the same job state* is refused. Vectorising again after a rework is fine; repeating it on an unchanged mask is not. |
+| **A stop condition decided by code.** | Targets met (labelled jobs), a **plateau** (two changes in a row with no new best), or **no productive lever left**. Once plateaued, further improvement calls are refused. An agent sent back twice without acting is stopped, and the report says what was left undone. |
+| **Definition of done.** | A measured network exists. Its settings were chosen with `try_candidates` on the *current* confidence map, and the live result is at least as good as the best candidate. It isn't below the best measured result. A stop condition holds. `suggest_missing_roads` has run on the final network. Finishing is blocked, up to eight times, until all of these hold. |
+| **A report from the checks.** | `report.json` / `report.md`: a status (complete / best effort / incomplete / failed) with its reason, the score after every change, the budgets used and the review queue left for a person. The verdict is computed, not taken from the model's summary. |
+
+One subtlety shaped the design. Label-free scores are only comparable
+**within one confidence map**, because re-running the model changes the map
+the judge scores against. Each measurement is tagged with the map's version,
+hashed from its content rather than its timestamp, because `apply_candidate`
+rewrites an identical file. When the version changes, the new network is
+judged **under the best result's map**, the one biased against it. Only a
+network that wins even there becomes the new best. This was the third version
+of the rule, and the only one that survived measurement (see below). The
+plateau is "two changes in a row with no new best", which means the same thing
+with or without labels.
+
+### Unattended runs
+
+Each run started from a bare mosaic with no human input, using the live LLM:
+
+| run | objective | what the agent did | result |
+| --- | --- | --- | --- |
+| Andover, labelled (CLI) | balanced | ran the pipeline, applied a candidate, reworked an area, ran a second candidate round, hit a plateau, handed off | 0.848 → 0.853 against ground truth; **best effort (plateau)** |
+| Boston, labels hidden (CLI) | precision | pipeline, then three candidate rounds varying the vectoriser; sent back once to use its last round | expected score 0.815 → 0.846; **best effort (no useful budget left)**; 30 gaps handed off |
+| Andover, labelled (web button) | precision | the same, from **Annotate autonomously** | 5 measured changes; **best effort (plateau)**, in 3 min 42 s |
+
+**Checked against the hidden truth**, the unlabelled Boston run beat the default
+pipeline on both axes. Correctness went from 0.837 to 0.851, completeness from
+0.654 to 0.667, and the precision objective (F0.5) from 0.793 to 0.807. A second
+run reproduced this to three decimals. The agent never saw a label: it judged
+every change with the expected-score judge alone.
+
+### What the unattended runs taught the rules
+
+Every run broke a rule that had looked sound on paper. Each fix is covered by a
+test that replays what happened.
+
+1. **The job ID.** The model mistyped a 22-character ID, and the loop rule
+   refused its corrected retry. The harness now fills in `job_id` itself.
+2. **Keep-best across model re-runs, twice.** Label-free scores depend on the
+   confidence map, and re-running the model changes it. The first rule started
+   a fresh comparison series; the second re-scored the old best under the *new*
+   map. Both let a worse rework replace a better network. The fix came from an
+   experiment: eight area reworks on Boston, all of which truly hurt. Judged
+   under the new map, the rule said "keep" 8 times out of 8. Judged under the
+   *best result's* map, which is biased against the newcomer, it said "reject"
+   8 times out of 8. That is the rule now. Caveat: no rework in the
+   experiment helped, so its ability to accept a good one is untested.
+3. **Upscaling the U-Net hurts.** Those eight reworks used `refine_area`'s
+   default of upscale 2, inherited from SAM 3, where it helped. With the U-Net
+   they cost up to 0.36 F0.5, and at native scale a rework reproduces the same
+   prediction. Both are now refused with the evidence, and the playbook points
+   "improve" at candidate rounds, the lever that actually worked.
+4. **Rules must be consistent.** "Budget spent" required every budget to be
+   exhausted, including the ones rule 3 had made unusable, so no stop condition
+   could hold. The harness sent the agent back eight times. The stop condition
+   is now "no productive lever left", and an agent that stops acting after
+   being sent back is stopped rather than sent back forever.
+5. **Scope.** An agent created a second region from other tiles. Job binding
+   kept its work on the right job, but an orphan was left behind. A bound
+   conversation can no longer create regions.
+
 ## Judging candidates without labels: two ideas, one survived
 
 `try_candidates` has to rank settings on imagery nobody has labelled. Both
@@ -159,6 +240,15 @@ Scripted tests pass on scripted models. These surfaced only with a real one:
 - Reasoning models put their whole chain of thought in the message content,
   thousands of characters per step. The panel folds anything longer than a
   couple of sentences into a collapsed "reasoning" card.
+- **Autonomous run, labelled.** The model mistyped the job ID (`…f00400438` for
+  `…f00438`), and the loop rule then refused its corrected retry, because the
+  ID wasn't part of the repeat key. A conversation is bound to one job, so the
+  harness now fills in `job_id` itself on every call.
+- **Autonomous run, unlabelled.** A rework changed the confidence map. Under
+  the first keep-best rule, that started a new comparison series, so the
+  worse result became "best" and overwrote the snapshot of a better one. The
+  better network was unrecoverable. The best is now re-scored under the
+  current map, and a regression test replays the exact sequence.
 - The step cards collapsed to 2 px. `#chatlog` is a scrolling flex column,
   and flex items with `overflow: hidden` have no minimum height. This was
   latent in the stylesheet and invisible until the log overflowed.
@@ -167,10 +257,12 @@ Scripted tests pass on scripted models. These surfaced only with a real one:
 
 ```
 src/gisagent/agent/loop.py        the harness: plan tool, plan mode, stop gate, memory, spilling
+src/gisagent/agent/rules.py       the task rules: order, budgets, loops, measuring, keep-best, done, report
 src/gisagent/checkpoints.py       per-turn snapshots with copy-on-write for large artefacts
 src/gisagent/vector/edits.py      edit log, merge, junction splitting, suggestions
 src/gisagent/evaluate/network.py  completeness / correctness, expected precision / recall
 web/static/editor.js              draw, reshape, delete, review; snapping; keyboard
 tests/test_harness.py             the harness against a scripted fake model
 tests/test_edits.py               merge rules, scoring, checkpoints, variant validation
+tests/test_rules.py               every task rule, and a whole scripted autonomous task
 ```

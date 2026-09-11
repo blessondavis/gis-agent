@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SNAPSHOT = ("job.json", "mask.tif", "roads.geojson", "network.geojson",
-            "edits.json", "plan.json")
+            "edits.json", "plan.json", "task.json", "report.json")
 KEEP = 12
 
 

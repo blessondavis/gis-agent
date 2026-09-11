@@ -421,13 +421,14 @@ def vectorize_result(job_id: str, min_object_px: int = 400, min_hole_px: int = 2
         "mask and vectors. Use this when a user says a specific part is wrong "
         "(e.g. 'the roads in the top-left are missing'). Far cheaper than "
         "re-running the whole region. Give either a named area or an explicit "
-        "bounding box. Consider a different prompt or a higher upscale for the "
-        "rework, since the defaults already failed there."
+        "bounding box. With the U-Net a rework needs backend='sam3' to change "
+        "anything (it is deterministic at native scale, and upscaling it was "
+        "measured to hurt); with sam3, try a different prompt or upscale 2."
     )
 )
 def refine_area(job_id: str, area: str = "", bbox_wgs84: list[float] | None = None,
                 prompt: str = "road network", threshold: float = 0.25,
-                upscale: int = 2, note: str = "", backend: str = "") -> dict:
+                upscale: int = 0, note: str = "", backend: str = "") -> dict:
     """
     Args:
         job_id: the job to correct.
@@ -437,10 +438,13 @@ def refine_area(job_id: str, area: str = "", bbox_wgs84: list[float] | None = No
         bbox_wgs84: explicit [west, south, east, north] in degrees.
         prompt: text prompt to use for the rework.
         threshold: detection score cut-off.
-        upscale: upsampling factor; 2 often recovers roads the first pass missed.
+        upscale: upsampling factor; 0 picks per backend -- 2 for sam3, where it
+            recovers thin roads, 1 for unet, where upscaling was measured to hurt.
         note: why this rework was requested, recorded in the job history.
         backend: "unet" or "sam3"; empty uses the configured default.
     """
+    resolved = (backend or get_settings().segment_backend or "unet").lower()
+    upscale = upscale or (2 if resolved == "sam3" else 1)
     try:
         job = pipeline.get_job(job_id)
     except FileNotFoundError as exc:

@@ -478,6 +478,42 @@ function addActivity(ev) {
         el("span", { class: "count" }, `${(ev.stats.human_length_m / 1000).toFixed(2)} km yours`))));
     return scrollDown();
   }
+  if (ev.type === "measure") {
+    // the harness's own score after a change: the number that decides things
+    const r = ev.result;
+    log.append(el("div", { class: "delta measure" + (r.best ? " best" : "") },
+      el("span", { class: "arrow" }, `${r.objective} score`),
+      el("span", { class: "to " + (r.best ? "up" : "") }, r.score.toFixed(3)),
+      el("span", { class: "arrow" }, r.best ? "new best" : `best ${Number(r.best_score).toFixed(3)}`),
+      el("span", { class: "arrow" }, r.basis === "ground truth" ? "vs truth" : "expected")));
+    return scrollDown();
+  }
+  if (ev.type === "rule") {
+    log.append(el("details", { class: "step fail", "data-kind": "fail" },
+      el("summary", {}, el("span", { class: "tag rule" }, "rule"),
+        el("span", { class: "sumtext" }, `${ev.tool} refused`)),
+      el("div", { class: "body" }, ev.text.replace(/^\[harness rule\] /, ""))));
+    return scrollDown();
+  }
+  if (ev.type === "report") {
+    const r = ev.result, f = r.final || {};
+    const label = { complete: "Complete", best_effort: "Best effort", incomplete: "Incomplete",
+                    failed: "Failed" }[r.status] || r.status;
+    const q = r.review_queue;
+    log.append(el("div", { class: `report ${r.status}` },
+      el("div", { class: "report-head" }, el("strong", {}, label),
+        el("span", { class: "dimtext" }, `${r.objective} · ${r.basis || ""}`)),
+      el("div", { class: "report-reason" }, r.reason),
+      el("dl", { class: "kv" },
+        el("dt", {}, "final score"), el("dd", {}, (f.score ?? 0).toFixed(3)),
+        el("dt", {}, "precision / recall"),
+        el("dd", {}, `${(f.precision ?? 0).toFixed(3)} / ${(f.recall ?? 0).toFixed(3)}`),
+        el("dt", {}, "network"), el("dd", {}, `${f.km ?? 0} km`),
+        el("dt", {}, "changes measured"), el("dd", {}, String(r.history.length)),
+        el("dt", {}, "for you to review"),
+        el("dd", {}, q ? `${q.gap} gaps, ${q.missed} possible roads` : "-"))));
+    return scrollDown();
+  }
   if (ev.type === "verify") {
     log.append(el("details", { class: "step" + (ev.ok ? "" : " fail"), "data-kind": ev.ok ? "ok" : "fail" },
       el("summary", {}, el("span", { class: "tag " + (ev.ok ? "ok" : "fail") }, ev.ok ? "verified" : "check"),
@@ -588,6 +624,7 @@ async function send(text, opts = {}) {
   const message = (text ?? $("#msg").value).trim();
   if (!message) return;
   const mode = opts.mode || ($("#planfirst").checked ? "plan" : "work");
+  const objective = $("#objective").value;
 
   // attach the drawn area so the agent gets exact coordinates
   let payload = message;
@@ -603,7 +640,7 @@ async function send(text, opts = {}) {
   setBusy(true);
   try {
     if (!state.socket || state.socket.readyState !== 1) connectSocket();
-    await api.post(`/api/jobs/${state.job}/chat`, { message: payload, mode });
+    await api.post(`/api/jobs/${state.job}/chat`, { message: payload, mode, objective });
   } catch (e) {
     setBusy(false);
     toast(e.message, true, 9000);
@@ -661,6 +698,9 @@ $("#btn-redo").addEventListener("click", () => editor.history("redo"));
 
 // chat controls
 $("#send").addEventListener("click", () => (state.busy ? stop() : send()));
+$("#btn-auto").addEventListener("click", () => send(
+  "Annotate the roads in this region, following the task rules, and hand over " +
+  "the best network you can measure.", { mode: "task" }));
 $("#msg").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });

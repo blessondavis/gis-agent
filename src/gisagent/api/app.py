@@ -103,7 +103,10 @@ class ChatRequest(BaseModel):
     message: str
     model: str | None = None
     max_steps: int | None = None
-    mode: str = "work"            # work | plan (read-only; propose, then approve)
+    mode: str = "work"            # work | plan (propose, then approve) | task (autonomous)
+    objective: str | None = None  # balanced | precision | recall
+    target_precision: float | None = None
+    target_recall: float | None = None
 
 
 class RewindRequest(BaseModel):
@@ -672,10 +675,20 @@ async def chat(job_id: str, req: ChatRequest) -> dict:
     if not req.message.strip():
         raise HTTPException(400, "message must not be empty")
 
-    if req.mode not in ("work", "plan"):
-        raise HTTPException(400, "mode must be 'work' or 'plan'")
+    if req.mode not in ("work", "plan", "task"):
+        raise HTTPException(400, "mode must be 'work', 'plan' or 'task'")
 
+    from gisagent.agent.rules import TaskSpec
     from gisagent.checkpoints import Checkpoints
+
+    spec = None
+    if req.mode == "task" or req.objective:
+        try:
+            spec = TaskSpec(objective=req.objective or "balanced",
+                            target_precision=req.target_precision,
+                            target_recall=req.target_recall)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     convo = Conversation(job.dir / "conversation.json")
     events_path = job.dir / "events.jsonl"
@@ -695,7 +708,7 @@ async def chat(job_id: str, req: ChatRequest) -> dict:
         agent = RoadAgent(model=req.model, max_steps=req.max_steps)
         try:
             async for ev in agent.chat(convo, req.message, job_id=job_id,
-                                       mode=req.mode):
+                                       mode=req.mode, spec=spec):
                 payload = ev.to_dict()
                 _log_event(job, payload)
                 await registry.publish(job_id, payload)
@@ -713,6 +726,16 @@ async def chat(job_id: str, req: ChatRequest) -> dict:
 
     registry.register(job_id, asyncio.create_task(_run()))
     return {"job_id": job_id, "state": "running"}
+
+
+@app.get("/api/jobs/{job_id}/report")
+def job_report(job_id: str) -> dict:
+    """The last autonomous task's report: verdict, score history, budgets."""
+    job = _job_or_404(job_id)
+    p = job.dir / "report.json"
+    if not p.exists():
+        raise HTTPException(404, "no autonomous task has run on this job")
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 @app.post("/api/jobs/{job_id}/chat/cancel")

@@ -115,6 +115,7 @@ networks instead of code:
 
 | | |
 | --- | --- |
+| **Autonomous mode** | **Annotate autonomously** (or `gisagent annotate <job>`) hands the agent the whole region under rules the harness enforces in code: pipeline order, budgets, no repeated calls, every change measured by the harness, the best result kept, a plateau stop, and a definition of done it can't finish without. It ends with a report whose verdict is computed, not claimed. Unattended on Boston **with the labels hidden**, it beat the default pipeline when checked against the truth afterwards: precision objective 0.793 → 0.807, better on both correctness and completeness. |
 | **Plan first** | Tick *Plan first* and the agent can only look and measure. It proposes a plan, and nothing changes until you click **Approve & run**. |
 | **Visible plan** | A checklist pinned above the chat, kept current as the agent works. |
 | **Candidates, then apply** | `try_candidates` builds several settings side by side without touching the live result, and ranks them by what you asked for: precision, recall or balanced. |
@@ -433,6 +434,7 @@ of assuming it did.
 | `gisagent regions` | rank contiguous tile blocks by road density |
 | `gisagent build <tiles...>` | download tiles and mosaic them into a job |
 | `gisagent run <job-id>` | full pipeline with metrics; `--model sam3\|unet` |
+| `gisagent annotate <job-id>` | annotate the region autonomously under the task rules; `--objective precision\|recall\|balanced`, targets, budgets; writes `report.md` |
 | `gisagent agent <job-id> "..."` | one agent turn, headless; `--plan` for read-only, `--json` for an event stream |
 | `gisagent train` | train the U-Net; `--init` plus `--extra-data` fine-tunes on a second dataset |
 | `gisagent evaluate-tiles` | score checkpoints on held-out tiles: pixel, relaxed and centreline metrics |
@@ -546,8 +548,8 @@ docker/                   Dockerfile + compose
 docs/                     harness notes, architecture, VLM critic study, design brief
 ```
 
-Run the tests with `uv run pytest` (101 tests, no network or GPU required;
-the agent harness is tested against a scripted fake model).
+Run the tests with `uv run pytest` (119 tests, no network or GPU required;
+the harness and its task rules are tested against a scripted fake model).
 
 ---
 

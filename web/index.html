@@ -139,8 +139,16 @@
         <textarea id="msg" rows="1" placeholder="Ask the agent... e.g. 'annotate the roads in this region'"></textarea>
         <button id="send">Send</button>
       </div>
-      <label class="planfirst" title="The agent may only look and measure, then proposes a plan. Nothing changes until you approve it.">
-        <input type="checkbox" id="planfirst"> Plan first, run after I approve</label>
+      <div class="taskrow">
+        <label class="planfirst" title="The agent may only look and measure, then proposes a plan. Nothing changes until you approve it.">
+          <input type="checkbox" id="planfirst"> Plan first</label>
+        <select id="objective" title="What 'better' means for this job. The harness scores every change by it.">
+          <option value="balanced">Balanced</option>
+          <option value="precision">Fewer wrong roads</option>
+          <option value="recall">Fewer missed roads</option>
+        </select>
+        <button id="btn-auto" class="sm" title="The agent annotates the whole region on its own, under enforced rules, and ends with a report">Annotate autonomously</button>
+      </div>
     </div>
   </aside>
 </div>

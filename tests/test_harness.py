@@ -65,8 +65,17 @@ def fake_tools(results):
 
 @pytest.fixture
 def job(tmp_path, monkeypatch):
+    """A job that has been through the pipeline, as far as the harness's
+    precondition checks can tell (they only look at which files exist)."""
     monkeypatch.setattr(pipeline, "jobs_root", lambda: tmp_path)
     j = pipeline.new_job("harness-test")
+    (j.chips_dir).mkdir()
+    (j.chips_dir / "chips.json").write_text("[]")
+    j.conf_dir.mkdir()
+    (j.conf_dir / "c.npy").write_bytes(b"")
+    for name in ("mask.tif", "confidence.tif", "truth.tif"):
+        (j.dir / name).write_bytes(b"")
+    (j.dir / "roads.geojson").write_text('{"type": "FeatureCollection", "features": []}')
     return j
 
 

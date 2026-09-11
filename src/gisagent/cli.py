@@ -490,6 +490,45 @@ def agent_turn(
     Same harness as the web app -- plan, stop gate, checkpoint -- with the
     trace on stdout. --json emits one event per line, like `grok -p`.
     """
+    raise typer.Exit(_headless(job_id, message, "plan" if plan else "work",
+                               None, as_json, max_steps))
+
+
+@app.command("annotate")
+def annotate(
+    job_id: str = typer.Argument(..., help="job to annotate (from `build` or the web app)"),
+    objective: str = typer.Option("balanced", help="balanced | precision | recall"),
+    target_precision: float = typer.Option(None, help="stop when correctness reaches this (labelled jobs)"),
+    target_recall: float = typer.Option(None, help="stop when completeness reaches this (labelled jobs)"),
+    max_segment_runs: int = typer.Option(2, help="whole-region model runs allowed"),
+    max_refines: int = typer.Option(4, help="area reworks allowed"),
+    instructions: str = typer.Option("", help="anything else the agent should know"),
+    as_json: bool = typer.Option(False, "--json", help="stream events as JSON lines"),
+    max_steps: int = typer.Option(60, help="LLM step budget"),
+) -> None:
+    """Annotate a region autonomously, under the task rules.
+
+    The harness enforces the order of the pipeline, budgets, no repeated
+    calls, measuring every change, keeping the best result, stopping at a
+    plateau, and handing off a review queue; the agent cannot finish until
+    that definition of done holds. Writes report.json / report.md in the job.
+
+    Exit code: 0 complete or best effort, 2 incomplete, 1 failed.
+    """
+    from gisagent.agent.rules import TaskSpec
+
+    spec = TaskSpec(objective=objective, target_precision=target_precision,
+                    target_recall=target_recall, max_segment_runs=max_segment_runs,
+                    max_refines=max_refines)
+    message = ("Annotate the roads in this region, following the task rules, and "
+               "hand over the best network you can measure.")
+    if instructions:
+        message += f"\n\nAlso: {instructions}"
+    raise typer.Exit(_headless(job_id, message, "task", spec, as_json, max_steps))
+
+
+def _headless(job_id: str, message: str, mode: str, spec, as_json: bool,
+              max_steps: int) -> int:
     import asyncio
     import json as _json
     import sys
@@ -516,9 +555,13 @@ def agent_turn(
         agent = RoadAgent(max_steps=max_steps or None)
         code = 0
         try:
-            async for ev in agent.chat(convo, message, job_id=job_id,
-                                       mode="plan" if plan else "work"):
+            async for ev in agent.chat(convo, message, job_id=job_id, mode=mode, spec=spec):
                 d = ev.to_dict()
+                if ev.type == "error":
+                    code = code or 1
+                if ev.type == "report":
+                    code = {"complete": 0, "best_effort": 0, "incomplete": 2}.get(
+                        ev.result["status"], 1)
                 if as_json:
                     print(_json.dumps(d, default=str), flush=True)
                     continue
@@ -530,6 +573,11 @@ def agent_turn(
                 elif ev.type == "tool_result":
                     mark = "[green]ok[/]" if ev.ok else "[red]failed[/]"
                     console.print(f"   {mark} {escape(ev.summary)} [dim]{ev.duration_s:.1f}s[/]")
+                elif ev.type == "measure":
+                    colour = "green" if ev.result["best"] else "cyan"
+                    console.print(f"   [{colour}]{escape(ev.text)}[/]")
+                elif ev.type == "rule":
+                    console.print(f"   [yellow]rule:[/] {escape(ev.text)}")
                 elif ev.type == "plan":
                     for s in ev.result["steps"]:
                         console.print(f"   [cyan]{escape('[' + s['status'] + ']')}[/] "
@@ -537,17 +585,23 @@ def agent_turn(
                 elif ev.type == "verify":
                     colour = "green" if ev.ok else "yellow"
                     console.print(f"[{colour}]verify:[/] {escape(ev.text)}")
-                elif ev.type in ("thinking", "message"):
+                elif ev.type == "thinking":
+                    t = ev.text if len(ev.text) < 400 else ev.text[:400] + " ..."
+                    console.print(t, markup=False, highlight=False, style="dim")
+                elif ev.type == "message":
                     console.print(ev.text, markup=False, highlight=False)
                 elif ev.type == "error":
                     console.print(f"[red]{escape(ev.text)}[/]")
-                    code = 1
+                elif ev.type == "report":
+                    console.rule(f"report: {ev.result['status']}")
+                    console.print((job.dir / "report.md").read_text(encoding="utf-8"),
+                                  markup=False, highlight=False)
             return code
         finally:
             cps.end()
             await mcp_client.shutdown()
 
-    raise typer.Exit(asyncio.run(_run()))
+    return asyncio.run(_run())
 
 
 @app.command("mcp")

@@ -652,6 +652,28 @@ body[data-edit="delete"] .leaflet-interactive { cursor: not-allowed !important; 
 
 #send.stop { background: var(--bad); color: #1a0606; }
 
+.taskrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.taskrow .planfirst { margin-top: 0; flex: 1; }
+.taskrow select {
+  background: var(--panel-2); color: var(--text-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 5px 8px; font: 11.5px var(--sans);
+}
+#btn-auto { background: #b9a8ff; color: #120b2b; }
+
+.delta.measure { margin-top: 0; }
+.delta.measure.best { border: 1px solid rgba(74, 222, 128, .35); }
+.step .tag.rule { background: rgba(255, 176, 32, .16); color: var(--warn); }
+
+.report {
+  border-radius: var(--radius); padding: 12px 14px; font-size: 12px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.report.complete, .report.best_effort { border-color: rgba(74, 222, 128, .45); }
+.report.incomplete, .report.failed { border-color: rgba(255, 107, 107, .5); }
+.report-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+.report-head strong { font-size: 13px; color: var(--text); }
+.report-reason { color: var(--text-2); margin-bottom: 8px; line-height: 1.45; }
+
 .planfirst {
   display: flex; align-items: center; gap: 7px; margin-top: 8px;
   color: var(--text-3); font-size: 11.5px; cursor: pointer;
