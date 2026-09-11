@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="540" viewBox="0 0 1600 540" role="img" aria-labelledby="t d">
+<title id="t">Road U-Net before and after fine-tuning on Global-Scale</title>
+<desc id="d">Massachusetts: Found 0.82 to 0.82, Correct 0.88 to 0.89, Centreline F1 0.85 to 0.85; Global test sites: Found 0.13 to 0.57, Correct 0.84 to 0.74, Centreline F1 0.22 to 0.64; Unseen cities: Found 0.21 to 0.54, Correct 0.74 to 0.57, Centreline F1 0.33 to 0.55</desc>
+<defs><style>.sans{font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif}.mono{font-family:Consolas,SFMono-Regular,Menlo,monospace}.t1{fill:#edeff2}.t2{fill:#a8b0ba}.t3{fill:#6b7480}</style><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0 H0 V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/></pattern></defs>
+<rect width="1600" height="540" rx="18" fill="#08090b"/><rect width="1600" height="540" rx="18" fill="url(#grid)"/>
+<text x="60" y="62" class="sans" font-size="16" font-weight="600" letter-spacing="3" fill="#4fe3e8">GLOBAL FINE-TUNING</text>
+<text x="60" y="98" class="sans t1" font-size="28" font-weight="700">Ten minutes on Global-Scale: 2.6× more of an unseen city found, Massachusetts unchanged</text>
+<rect x="1130" y="125" width="14" height="14" rx="3" fill="#cf7a26"/>
+<text x="1152" y="137" class="sans t2" font-size="15">U-Net, Massachusetts only</text>
+<rect x="1350" y="125" width="14" height="14" rx="3" fill="#8b6cff"/>
+<text x="1372" y="137" class="sans t2" font-size="15">+ Global-Scale fine-tune</text>
+<rect x="60" y="156" width="480" height="298" rx="14" fill="#0f1114" stroke="#23272e"/>
+<text x="82" y="188" class="sans t1" font-size="19" font-weight="700">Massachusetts</text>
+<text x="518" y="188" text-anchor="end" class="sans t3" font-size="13">20 held-out tiles</text>
+<line x1="186.0" y1="198" x2="186.0" y2="404" stroke="#1f2329"/>
+<text x="186.0" y="424" text-anchor="middle" class="mono t3" font-size="12">0</text>
+<line x1="331.0" y1="198" x2="331.0" y2="404" stroke="#1f2329"/>
+<text x="331.0" y="424" text-anchor="middle" class="mono t3" font-size="12">0.5</text>
+<line x1="476.0" y1="198" x2="476.0" y2="404" stroke="#1f2329"/>
+<text x="476.0" y="424" text-anchor="middle" class="mono t3" font-size="12">1</text>
+<text x="82" y="230" class="sans t2" font-size="14.5">Found</text>
+<path d="M186.0 206.0 H418.9 Q422.9 206.0 422.9 210.0 V220.0 Q422.9 224.0 418.9 224.0 H186.0 Z" fill="#cf7a26"/>
+<path d="M186.0 226.0 H418.8 Q422.8 226.0 422.8 230.0 V240.0 Q422.8 244.0 418.8 244.0 H186.0 Z" fill="#8b6cff"/>
+<text x="429.9" y="220" class="mono t2" font-size="12.5">0.82</text>
+<text x="429.8" y="240" class="mono t1" font-size="12.5">0.82</text>
+<text x="82" y="310" class="sans t2" font-size="14.5">Correct</text>
+<path d="M186.0 286.0 H438.6 Q442.6 286.0 442.6 290.0 V300.0 Q442.6 304.0 438.6 304.0 H186.0 Z" fill="#cf7a26"/>
+<path d="M186.0 306.0 H439.2 Q443.2 306.0 443.2 310.0 V320.0 Q443.2 324.0 439.2 324.0 H186.0 Z" fill="#8b6cff"/>
+<text x="449.6" y="300" class="mono t2" font-size="12.5">0.88</text>
+<text x="450.2" y="320" class="mono t1" font-size="12.5">0.89</text>
+<text x="82" y="390" class="sans t2" font-size="14.5">Centreline F1</text>
+<path d="M186.0 366.0 H428.4 Q432.4 366.0 432.4 370.0 V380.0 Q432.4 384.0 428.4 384.0 H186.0 Z" fill="#cf7a26"/>
+<path d="M186.0 386.0 H428.6 Q432.6 386.0 432.6 390.0 V400.0 Q432.6 404.0 428.6 404.0 H186.0 Z" fill="#8b6cff"/>
+<text x="439.4" y="380" class="mono t2" font-size="12.5">0.85</text>
+<text x="439.6" y="400" class="mono t1" font-size="12.5">0.85</text>
+<rect x="560" y="156" width="480" height="298" rx="14" fill="#0f1114" stroke="#23272e"/>
+<text x="582" y="188" class="sans t1" font-size="19" font-weight="700">Global test sites</text>
+<text x="1018" y="188" text-anchor="end" class="sans t3" font-size="13">60 sites unseen in training</text>
+<line x1="686.0" y1="198" x2="686.0" y2="404" stroke="#1f2329"/>
+<text x="686.0" y="424" text-anchor="middle" class="mono t3" font-size="12">0</text>
+<line x1="831.0" y1="198" x2="831.0" y2="404" stroke="#1f2329"/>
+<text x="831.0" y="424" text-anchor="middle" class="mono t3" font-size="12">0.5</text>
+<line x1="976.0" y1="198" x2="976.0" y2="404" stroke="#1f2329"/>
+<text x="976.0" y="424" text-anchor="middle" class="mono t3" font-size="12">1</text>
+<text x="582" y="230" class="sans t2" font-size="14.5">Found</text>
+<path d="M686.0 206.0 H718.4 Q722.4 206.0 722.4 210.0 V220.0 Q722.4 224.0 718.4 224.0 H686.0 Z" fill="#cf7a26"/>
+<path d="M686.0 226.0 H846.5 Q850.5 226.0 850.5 230.0 V240.0 Q850.5 244.0 846.5 244.0 H686.0 Z" fill="#8b6cff"/>
+<text x="729.4" y="220" class="mono t2" font-size="12.5">0.13</text>
+<text x="857.5" y="240" class="mono t1" font-size="12.5">0.57</text>
+<text x="582" y="310" class="sans t2" font-size="14.5">Correct</text>
+<path d="M686.0 286.0 H925.7 Q929.7 286.0 929.7 290.0 V300.0 Q929.7 304.0 925.7 304.0 H686.0 Z" fill="#cf7a26"/>
+<path d="M686.0 306.0 H897.7 Q901.7 306.0 901.7 310.0 V320.0 Q901.7 324.0 897.7 324.0 H686.0 Z" fill="#8b6cff"/>
+<text x="936.7" y="300" class="mono t2" font-size="12.5">0.84</text>
+<text x="908.7" y="320" class="mono t1" font-size="12.5">0.74</text>
+<text x="582" y="390" class="sans t2" font-size="14.5">Centreline F1</text>
+<path d="M686.0 366.0 H745.3 Q749.3 366.0 749.3 370.0 V380.0 Q749.3 384.0 745.3 384.0 H686.0 Z" fill="#cf7a26"/>
+<path d="M686.0 386.0 H868.7 Q872.7 386.0 872.7 390.0 V400.0 Q872.7 404.0 868.7 404.0 H686.0 Z" fill="#8b6cff"/>
+<text x="756.3" y="380" class="mono t2" font-size="12.5">0.22</text>
+<text x="879.7" y="400" class="mono t1" font-size="12.5">0.64</text>
+<rect x="1060" y="156" width="480" height="298" rx="14" fill="#0f1114" stroke="#23272e"/>
+<text x="1082" y="188" class="sans t1" font-size="19" font-weight="700">Unseen cities</text>
+<text x="1518" y="188" text-anchor="end" class="sans t3" font-size="13">130: Lucerne, Shenzhen, Hong Kong</text>
+<line x1="1186.0" y1="198" x2="1186.0" y2="404" stroke="#1f2329"/>
+<text x="1186.0" y="424" text-anchor="middle" class="mono t3" font-size="12">0</text>
+<line x1="1331.0" y1="198" x2="1331.0" y2="404" stroke="#1f2329"/>
+<text x="1331.0" y="424" text-anchor="middle" class="mono t3" font-size="12">0.5</text>
+<line x1="1476.0" y1="198" x2="1476.0" y2="404" stroke="#1f2329"/>
+<text x="1476.0" y="424" text-anchor="middle" class="mono t3" font-size="12">1</text>
+<text x="1082" y="230" class="sans t2" font-size="14.5">Found</text>
+<path d="M1186.0 206.0 H1242.8 Q1246.8 206.0 1246.8 210.0 V220.0 Q1246.8 224.0 1242.8 224.0 H1186.0 Z" fill="#cf7a26"/>
+<path d="M1186.0 226.0 H1338.3 Q1342.3 226.0 1342.3 230.0 V240.0 Q1342.3 244.0 1338.3 244.0 H1186.0 Z" fill="#8b6cff"/>
+<text x="1253.8" y="220" class="mono t2" font-size="12.5">0.21</text>
+<text x="1349.3" y="240" class="mono t1" font-size="12.5">0.54</text>
+<text x="1082" y="310" class="sans t2" font-size="14.5">Correct</text>
+<path d="M1186.0 286.0 H1395.6 Q1399.6 286.0 1399.6 290.0 V300.0 Q1399.6 304.0 1395.6 304.0 H1186.0 Z" fill="#cf7a26"/>
+<path d="M1186.0 306.0 H1346.5 Q1350.5 306.0 1350.5 310.0 V320.0 Q1350.5 324.0 1346.5 324.0 H1186.0 Z" fill="#8b6cff"/>
+<text x="1406.6" y="300" class="mono t2" font-size="12.5">0.74</text>
+<text x="1357.5" y="320" class="mono t1" font-size="12.5">0.57</text>
+<text x="1082" y="390" class="sans t2" font-size="14.5">Centreline F1</text>
+<path d="M1186.0 366.0 H1276.7 Q1280.7 366.0 1280.7 370.0 V380.0 Q1280.7 384.0 1276.7 384.0 H1186.0 Z" fill="#cf7a26"/>
+<path d="M1186.0 386.0 H1342.3 Q1346.3 386.0 1346.3 390.0 V400.0 Q1346.3 404.0 1342.3 404.0 H1186.0 Z" fill="#8b6cff"/>
+<text x="1287.7" y="380" class="mono t2" font-size="12.5">0.33</text>
+<text x="1353.3" y="400" class="mono t1" font-size="12.5">0.55</text>
+<text x="60" y="496" class="sans t3" font-size="14.5">Length-based, within 5 px of the reference centreline, so label width cannot move it. The fine-tune shares no site with any test tile.</text>
+<text x="60" y="518" class="sans t3" font-size="14.5">Correctness falls where the model now draws more road. Some of that may be real roads missing from the OpenStreetMap labels, which this cannot measure.</text>
+</svg>

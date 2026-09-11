@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="#-quickstart"><img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12 | 3.13"></a>
-  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-19%20tools-7c5cff?style=for-the-badge" alt="MCP: 19 tools"></a>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-23%20tools-7c5cff?style=for-the-badge" alt="MCP: 23 tools"></a>
   <a href="https://huggingface.co/facebook/sam3"><img src="https://img.shields.io/badge/SAM%203-text--prompted-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="SAM 3"></a>
   <a href="https://qgis.org"><img src="https://img.shields.io/badge/QGIS-headless-589632?style=for-the-badge&logo=qgis&logoColor=white" alt="QGIS headless"></a>
   <a href="https://pytorch.org"><img src="https://img.shields.io/badge/PyTorch-cu128-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white" alt="PyTorch"></a>
@@ -14,11 +14,12 @@
 
 <p align="center">
   <b><a href="#-quickstart">Quickstart</a></b> ·
-  <b><a href="#-how-it-works">How it works</a></b> ·
+  <b><a href="#-finish-it-by-hand">Finish it by hand</a></b> ·
+  <b><a href="#-the-harness">Harness</a></b> ·
   <b><a href="#-results">Results</a></b> ·
+  <b><a href="#-beyond-massachusetts">Global test</a></b> ·
   <b><a href="#-mcp-tools">MCP tools</a></b> ·
-  <b><a href="docs/architecture.md">Architecture</a></b> ·
-  <b><a href="docs/vlm-critic.md">VLM critic study</a></b>
+  <b><a href="docs/harness.md">Design notes</a></b>
 </p>
 
 ---
@@ -33,21 +34,30 @@ You give it a region. It gives you back **road centrelines as GeoJSON**, an
 
 <table>
   <tr>
-    <td width="33%" valign="top">
-      <h3>🤖 An agent, not a script</h3>
-      It picks prompts, thresholds and upscale factors, reads back measured
-      scores, and re-traces only the weak chips. It works the way an operator
-      zooms into a bad patch.
+    <td width="50%" valign="top">
+      <h3>🤖 An agent with a harness</h3>
+      It plans where you can see it, compares settings side by side before
+      touching anything, and can't sign off until it has measured the result.
+      Every turn can be rewound, files included.
     </td>
-    <td width="33%" valign="top">
+    <td width="50%" valign="top">
+      <h3>✍️ You finish the last stretch</h3>
+      Draw, reshape and delete roads in the same map. Your edits sit on top of
+      the model's roads and survive every re-run. A review queue walks you
+      through the roads it probably missed.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
       <h3>🧭 Judges itself without labels</h3>
-      A vision-model critic, network topology and model confidence tell it
-      when it's done, even on imagery nobody has annotated.
+      On imagery nobody has labelled, it scores its own output with a
+      vision-model critic, network topology and its own confidence, each
+      checked against ground truth before being trusted.
     </td>
-    <td width="33%" valign="top">
+    <td valign="top">
       <h3>🗺️ Real GIS output</h3>
-      WGS84 GeoJSON for web maps, GeoPackage in the source CRS, and headless
-      QGIS with all 712 algorithms callable directly.
+      A noded road network as WGS84 GeoJSON, with every junction a real
+      node. Headless QGIS, with all 712 algorithms callable directly.
     </td>
   </tr>
 </table>
@@ -64,10 +74,68 @@ correct, orange is a false positive, red is a missed road.
 
 ---
 
+## ✍️ Finish it by hand
+
+The model gets most of the network. The last stretch is faster to draw than to
+prompt for, so the workspace has real editing tools, right in the same map:
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/editor-review.jpg" alt="Review mode stepping through a suggested gap connector at an intersection"></td>
+    <td width="50%"><img src="docs/assets/editor-draw.jpg" alt="Drawing a road, with vertices snapping to the existing network"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Review suggestions</b> <kbd>R</kbd>: step through roads the network is
+      probably missing, then <kbd>A</kbd> to accept or <kbd>X</kbd> to dismiss.</td>
+    <td valign="top"><b>Draw</b> <kbd>D</kbd>, <b>reshape</b> <kbd>V</kbd>, <b>delete</b>
+      <kbd>X</kbd>, with vertices snapping to junctions and roads. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes.</td>
+  </tr>
+</table>
+
+- **Your edits survive the agent.** They're kept as their own undoable layer
+  and merged over the model's roads every time the network is read. The agent
+  can re-run the model underneath you and nothing you drew is lost.
+- **Junctions are real.** A road you end on another snaps to it and splits
+  it there, so the delivered GeoJSON is a noded network rather than lines that
+  merely touch.
+- **Suggestions are ranked by how often they're right.** Measured on Boston,
+  80% of the top-ranked *gap* suggestions (two dead ends that nearly meet) are
+  real roads. "Possible road" suggestions are right about half the time and
+  are labelled that way.
+- **The Completion panel shows who did what.** It gives the share of the real
+  road network found, by the model alone and with your edits.
+
+---
+
+## 🧠 The harness
+
+The agent loop borrows its structure from xAI's open-source
+[Grok Build](https://github.com/xai-org/grok-build), adapted to rasters and road
+networks instead of code:
+
+| | |
+| --- | --- |
+| **Plan first** | Tick *Plan first* and the agent can only look and measure. It proposes a plan, and nothing changes until you click **Approve & run**. |
+| **Visible plan** | A checklist pinned above the chat, kept current as the agent works. |
+| **Candidates, then apply** | `try_candidates` builds several settings side by side without touching the live result, and ranks them by what you asked for: precision, recall or balanced. |
+| **Stop gate** | The agent can't finish while its output has changed since it last measured, or while its reply quotes a score no tool returned. |
+| **Rewind, files included** | ↺ on any message restores the mask, centrelines, confidence maps, your edits and the plan to just before it. Grok Build's rewind leaves files alone. |
+| **Session replay** | The whole trace (plan, tool cards, checks, edits) rebuilds after a reload. |
+| **Headless** | `gisagent agent <job> "..." --json` runs the same harness from scripts and CI. |
+
+Ranking candidates on unlabelled imagery needs a judge that works without
+labels, so two were tested against ground truth first. **Topology ranked them
+backwards (Spearman −0.64).** The network's expected precision and recall under
+the model's own confidence picked the ground-truth winner under every objective
+(ρ 0.89 to 1.00). The measurements, the bugs the live runs caught, and the
+limits are written up in [docs/harness.md](docs/harness.md).
+
+---
+
 ## 🔧 How it works
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="The LLM agent calls 19 MCP tools that drive six stages: region, chip, segment, stitch, vectorise, judge, with a feedback loop into segmentation" width="100%">
+  <img src="docs/assets/architecture.svg" alt="The LLM agent calls 23 MCP tools that drive six stages: region, chip, segment, stitch, vectorise, judge, with a feedback loop into segmentation" width="100%">
 </p>
 
 The agent is **not** running a fixed script. It chooses prompts, thresholds and
@@ -182,6 +250,80 @@ right is agreement with ground truth.
 
 ---
 
+## 🌍 Beyond Massachusetts
+
+A model trained on one US state was then tested on the rest of the world, using
+[Global-Scale](https://arxiv.org/abs/2411.16733) (CVPR 2025): 1 m/px imagery from
+six continents, plus a test set of cities absent from its training pool.
+
+<p align="center">
+  <img src="docs/assets/global-results.svg" alt="Found, correct and centreline F1 before and after fine-tuning, on Massachusetts, global test sites and unseen cities" width="100%">
+</p>
+
+**Out of the box, it fails abroad.** On unseen cities it finds 21% of the road
+network, against 82% at home. It isn't a resolution problem: shrinking or
+enlarging the imagery before inference only made things worse. What it does
+draw is mostly right (74% correct), so it's under-detection. The model has
+learned what a Massachusetts road looks like.
+
+**Ten minutes of fine-tuning closes much of the gap.** The fine-tune starts
+from the Massachusetts model and mixes Massachusetts and Global-Scale crops
+50/50. The best epoch is chosen on the mean of the two validation sets, so the
+new domain can't be learned at the old one's expense:
+
+| held-out set | found | correct | centreline F1 |
+| --- | --- | --- | --- |
+| Massachusetts (20 tiles) | 0.817 → 0.816 | 0.885 → 0.887 | 0.850 → 0.850 |
+| Global test sites (60) | 0.125 → **0.567** | 0.841 → 0.744 | 0.218 → **0.644** |
+| Unseen cities (130) | 0.210 → **0.539** | 0.737 → 0.567 | 0.327 → **0.553** |
+
+<p align="center">
+  <img src="docs/assets/global-ood.jpg" alt="Lucerne and Shenzhen tiles: imagery, zero-shot prediction and fine-tuned prediction coloured by agreement with ground truth" width="100%">
+</p>
+
+The tiles above are the ones closest to each city's *median* improvement, not
+the best. They show the trade honestly. Lucerne goes from 33% found to 69%.
+Shenzhen goes from 55% to 81% found, but at 33% correct. Many of those orange
+"false positives" follow narrow alleys between buildings that OpenStreetMap,
+and therefore the labels, doesn't include. That's plausible, but it can't be
+scored here, so treat the correctness drop as real.
+
+<details>
+<summary><b>How the test was kept honest</b></summary>
+<br>
+
+- **The official split leaks.** 71 of Global-Scale's official training tiles are
+  byte-identical to validation or test tiles, and many more overlap them
+  spatially at a partial offset. Tiles were grouped into *sites* by shared road
+  junctions, and no fine-tuning site overlaps any test site.
+- **Labels were redrawn to match.** Global-Scale ships road graphs whose own
+  masks are 3 px wide. Massachusetts labels measure 7 px, so the graphs were
+  re-rasterised at 7 px. The axis order was verified at IoU 0.999 against the
+  dataset's own rendering.
+- **The headline metrics ignore label width.** Found and correct compare
+  thinned centrelines by length, within 5 px, so a label convention can't
+  inflate or deflate them. Pixel IoU is in the JSON reports too.
+
+Reproduce it: prepare the data with `gisagent.dataset.global_scale.prepare()`
+(about 3 GB), then
+
+```bash
+uv run gisagent train --skip-fetch --init models/unet_roads.pt \
+    --extra-data <global-scale dir> --lr 1e-4 --epochs 12 --out-name unet_roads_global.pt
+uv run gisagent evaluate-tiles --checkpoint models/unet_roads.pt \
+    --checkpoint models/unet_roads_global.pt --mass-val \
+    --data <global-scale dir> --set ood --set id_test
+```
+
+To use the fine-tuned model everywhere, set
+`GISAGENT_UNET_CHECKPOINT=models/unet_roads_global.pt` in `.env`. Global-Scale
+uses Google imagery and is published for research. It's fetched from an
+unofficial Hugging Face mirror and is not redistributed here.
+
+</details>
+
+---
+
 ## 🚀 Quickstart
 
 **Requirements:** Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) ·
@@ -269,9 +411,11 @@ can drive the pipeline directly.
 | --- | --- |
 | 🔎 discovery | `list_available_tiles`, `list_jobs`, `get_job_status` |
 | 🧩 region | `create_region_job`, `tile_region`, `inspect_chip` |
-| 🧠 inference | `segment_chips`, `stitch_result`, `refine_area` |
+| 🧠 inference | `segment_chips` (U-Net or SAM 3), `stitch_result`, `refine_area` |
+| ⚖️ candidates | `try_candidates`, `apply_candidate` |
 | 📏 quality, with labels | `evaluate_result`, `sweep_threshold`, `low_confidence_roads` |
 | 🧭 quality, label-free | `critique_annotation`, `check_topology` |
+| ✍️ the person's work | `network_status`, `suggest_missing_roads` |
 | 🗺️ vector | `vectorize_result`, `repair_geometry` |
 | 🛠️ QGIS | `qgis_version`, `list_qgis_algorithms`, `run_qgis_algorithm` |
 
@@ -289,11 +433,13 @@ of assuming it did.
 | `gisagent regions` | rank contiguous tile blocks by road density |
 | `gisagent build <tiles...>` | download tiles and mosaic them into a job |
 | `gisagent run <job-id>` | full pipeline with metrics; `--model sam3\|unet` |
-| `gisagent train` | train the U-Net on Massachusetts Roads labels |
+| `gisagent agent <job-id> "..."` | one agent turn, headless; `--plan` for read-only, `--json` for an event stream |
+| `gisagent train` | train the U-Net; `--init` plus `--extra-data` fine-tunes on a second dataset |
+| `gisagent evaluate-tiles` | score checkpoints on held-out tiles: pixel, relaxed and centreline metrics |
 | `gisagent benchmark <jobs...>` | score backends against each other |
 | `gisagent jobs` | list jobs, newest first |
 | `gisagent serve` | run the web app |
-| `gisagent mcp` | expose the 19 MCP tools on stdio, for an external client |
+| `gisagent mcp` | expose the 23 MCP tools on stdio, for an external client |
 
 Add `--help` to any of them.
 
@@ -380,25 +526,28 @@ and uncomment the `deploy.resources` block (needs `nvidia-container-toolkit`).
 
 ```
 src/gisagent/
-  dataset/mass_roads.py   tile index, grid decoding, screening, download
+  dataset/                Massachusetts Roads index + download; Global-Scale preparation
   raster/                 georeferencing, chipping, stitching, previews
   segment/                SAM 3 concept segmentation, U-Net sliding-window inference
-  train/                  training-set selection, road-biased crops, training loop
+  train/                  training-set selection, road-biased crops, training / fine-tuning
   vector/roads.py         morphology → skeleton → centreline GeoJSON
+  vector/edits.py         the person's edit layer: merge, junction splitting, suggestions
   vector/topology.py      label-free network scoring: components, dangles, gaps
   critic/vlm.py           vision-model critic for unlabelled imagery
-  evaluate/metrics.py     IoU / precision / recall / F1, strict and relaxed
+  evaluate/               pixel metrics, length-based network scores, cross-dataset tiles
   qgis/process.py         headless qgis_process wrapper
-  mcp_servers/            19 MCP tools over the pipeline
-  agent/loop.py           OpenAI-compatible tool-calling loop
-  api/app.py              FastAPI + WebSocket
-  pipeline.py             Job: stages, artefacts, manifest
-web/                      single-page workspace, no build step
+  mcp_servers/            23 MCP tools over the pipeline
+  agent/loop.py           the harness: plan, plan mode, stop gate, working memory, spilling
+  checkpoints.py          per-turn snapshots, so a rewind restores files
+  api/app.py              FastAPI + WebSocket, edits, rewind, session replay
+  pipeline.py             Job: stages, artefacts, manifest, candidates
+web/                      single-page workspace + map editor, no build step
 docker/                   Dockerfile + compose
-docs/                     architecture, VLM critic study, design brief
+docs/                     harness notes, architecture, VLM critic study, design brief
 ```
 
-Run the tests with `uv run pytest` (66 tests, no network or GPU required).
+Run the tests with `uv run pytest` (101 tests, no network or GPU required;
+the agent harness is tested against a scripted fake model).
 
 ---
 

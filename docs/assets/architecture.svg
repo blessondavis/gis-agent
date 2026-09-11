@@ -46,7 +46,7 @@
     <path d="M800 224 C800 262, 1430 262, 1430 306"/>
   </g>
   <rect x="728" y="246" width="144" height="26" rx="13" fill="#08090b" stroke="#7c5cff" stroke-opacity="0.6"/>
-  <text x="800" y="264" text-anchor="middle" class="mono" font-size="13" fill="#b9a8ff">19 MCP tools</text>
+  <text x="800" y="264" text-anchor="middle" class="mono" font-size="13" fill="#b9a8ff">23 MCP tools</text>
 
   <!-- stage cards: x = 60 + i*252, w = 220 -->
   <g class="sans">
@@ -117,8 +117,8 @@
   <!-- feedback loop -->
   <path d="M1430 478 V530 Q1430 548 1412 548 H692 Q674 548 674 530 V486" fill="none" stroke="#ffb84d" stroke-width="2" marker-end="url(#arrA)"/>
   <rect x="822" y="530" width="456" height="36" rx="18" fill="#1a1409" stroke="#ffb84d" stroke-opacity="0.7"/>
-  <text x="1050" y="554" text-anchor="middle" class="mono" font-size="14.5" fill="#ffb84d">refine_area · sweep_threshold · repair_geometry</text>
-  <text x="1050" y="590" text-anchor="middle" class="sans t2" font-size="15">re-run only the weak chips, never the whole region</text>
+  <text x="1050" y="554" text-anchor="middle" class="mono" font-size="14.5" fill="#ffb84d">try_candidates · refine_area · repair_geometry</text>
+  <text x="1050" y="590" text-anchor="middle" class="sans t2" font-size="15">compare settings in isolation, re-run only the weak chips</text>
 
   <!-- design facts -->
   <line x1="60" y1="628" x2="1540" y2="628" stroke="#23272e"/>
