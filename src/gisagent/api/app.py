@@ -103,6 +103,11 @@ class ChatRequest(BaseModel):
     message: str
     model: str | None = None
     max_steps: int | None = None
+    mode: str = "work"            # work | plan (read-only; propose, then approve)
+
+
+class RewindRequest(BaseModel):
+    message_index: int            # rewind to just before this chat message
 
 
 class PipelineRequest(BaseModel):
@@ -112,6 +117,15 @@ class PipelineRequest(BaseModel):
     seg_threshold: float = 0.3
     upscale: int = 1
     mask_threshold: float = 0.5
+
+
+class EditRequest(BaseModel):
+    """One edit to the network. Coordinates are WGS84 [[lng, lat], ...]."""
+
+    op: str                                    # add | delete | replace | dismiss
+    geometry: list[list[float]] | None = None  # the new line (add/replace/dismiss)
+    target: dict | None = None                 # {source, id, geometry} (delete/replace)
+    note: str = ""
 
 
 class RefineRequest(BaseModel):
@@ -412,6 +426,96 @@ def job_roads(job_id: str):
 
 
 # --------------------------------------------------------------------------- #
+# human edits: the person finishing what the model started
+# --------------------------------------------------------------------------- #
+
+def _job_or_404(job_id: str):
+    try:
+        return pipeline.get_job(job_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"no such job: {job_id}")
+
+
+@app.get("/api/jobs/{job_id}/network.geojson")
+async def job_network(job_id: str):
+    """The deliverable: machine centrelines with the person's edits applied."""
+    job = _job_or_404(job_id)
+    if not job.vector_path.exists() and not job.edits_path.exists():
+        raise HTTPException(404, "not vectorized yet")
+    fc = await asyncio.to_thread(job.network)
+    return JSONResponse(fc, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/jobs/{job_id}/edits")
+async def apply_edit(job_id: str, req: EditRequest) -> dict:
+    job = _job_or_404(job_id)
+    log = job.edit_log()
+    try:
+        if req.op == "add":
+            op = log.add_line(req.geometry, note=req.note)
+        elif req.op == "delete":
+            op = log.delete(req.target or {}, note=req.note)
+        elif req.op == "replace":
+            op = log.replace(req.target or {}, req.geometry, note=req.note)
+        elif req.op == "dismiss":
+            op = log.dismiss(req.geometry, note=req.note)
+        else:
+            raise ValueError(f"unknown op {req.op!r}")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc))
+    return await _after_edit(job, op["op"], op)
+
+
+@app.post("/api/jobs/{job_id}/edits/{action}")
+async def undo_redo(job_id: str, action: str) -> dict:
+    if action not in ("undo", "redo"):
+        raise HTTPException(404, "expected undo or redo")
+    job = _job_or_404(job_id)
+    log = job.edit_log()
+    op = log.undo() if action == "undo" else log.redo()
+    if op is None:
+        raise HTTPException(409, f"nothing to {action}")
+    return await _after_edit(job, action, op)
+
+
+async def _after_edit(job, action: str, op: dict) -> dict:
+    fc = await asyncio.to_thread(job.rebuild_network)
+    stats = fc["stats"]
+    event = {"type": "edit", "action": action, "op": op.get("op"),
+             "note": op.get("note", ""), "stats": stats}
+    _log_event(job, event)
+    await registry.publish(job.job_id, event)
+    return {"action": action, "op": op, "stats": stats, "network": fc}
+
+
+@app.get("/api/jobs/{job_id}/edits")
+def list_edits(job_id: str) -> dict:
+    job = _job_or_404(job_id)
+    log = job.edit_log()
+    state = log.state()
+    return {"ops": log.ops[-200:], "n_ops": state.n_ops,
+            "can_undo": state.n_ops > 0, "can_redo": state.can_redo,
+            "n_human": len(state.human), "n_deleted": len(state.deleted)}
+
+
+@app.get("/api/jobs/{job_id}/suggestions")
+async def suggestions(job_id: str, threshold: float = 0.25, limit: int = 60) -> dict:
+    job = _job_or_404(job_id)
+    try:
+        return await asyncio.to_thread(job.suggest, threshold, limit)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/jobs/{job_id}/network/score")
+async def network_score(job_id: str, tolerance_m: float = 5.0) -> dict:
+    job = _job_or_404(job_id)
+    if not job.has_truth():
+        raise HTTPException(409, "no ground truth for this job")
+    return await asyncio.to_thread(job.score_network, tolerance_m)
+
+
+# --------------------------------------------------------------------------- #
 # pipeline operations (through MCP, so the model stays in one process)
 # --------------------------------------------------------------------------- #
 
@@ -478,43 +582,17 @@ async def refine(job_id: str, req: RefineRequest) -> dict:
 # conversational agent
 # --------------------------------------------------------------------------- #
 
-def _job_context(job) -> str:
-    s = job.status()
-    lines = [
-        f"job_id: {s['job_id']}",
-        f"stage: {s['stage']}",
-        f"region: {s['region'].get('width')}x{s['region'].get('height')} px, "
-        f"{s['region'].get('n_tiles')} tile(s), CRS {s['region'].get('crs')}",
-        f"ground truth available: {bool(s['region'].get('truth'))}",
-    ]
-    if s.get("metrics"):
-        m = s["metrics"]
-        lines.append(f"latest metrics: IoU {m['iou']}, F1 {m['f1']}, "
-                     f"relaxed F1 {m['relaxed_f1']}")
-    if s.get("vector_stats"):
-        v = s["vector_stats"]
-        lines.append(f"vectors: {v['n_features']} centrelines, "
-                     f"{v['total_length_km']} km")
-    seg = job.manifest.get("segmentation")
-    if seg:
-        lines.append(f"last segmentation: prompt '{seg.get('prompt')}', "
-                     f"threshold {seg.get('threshold')}, upscale {seg.get('upscale')}")
-    refs = job.manifest.get("refinements") or []
-    if refs:
-        lines.append(f"areas already reworked: "
-                     f"{', '.join(r.get('note', '?') for r in refs[-4:])}")
-    return "\n".join(lines)
-
-
 @app.get("/api/jobs/{job_id}/conversation")
 def get_conversation(job_id: str) -> dict:
-    from gisagent.agent.loop import Conversation
+    from gisagent.agent.loop import Conversation, load_plan
+    from gisagent.checkpoints import Checkpoints
 
     try:
         job = pipeline.get_job(job_id)
     except FileNotFoundError:
         raise HTTPException(404, f"no such job: {job_id}")
     convo = Conversation(job.dir / "conversation.json")
+    rewindable = {c["message_index"]: c["id"] for c in Checkpoints(job.dir).list()}
     events = []
     path = job.dir / "events.jsonl"
     if path.exists():
@@ -524,8 +602,45 @@ def get_conversation(job_id: str) -> dict:
                     events.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
-    return {"job_id": job_id, "messages": convo.visible(), "events": events,
-            "state": registry.state(job_id)}
+    messages = convo.visible()
+    for m in messages:
+        if m["role"] == "user" and m["index"] in rewindable:
+            m["checkpoint"] = rewindable[m["index"]]
+    for e in events:
+        if e.get("type") == "user":
+            e["rewindable"] = e.get("index") in rewindable
+    return {"job_id": job_id, "messages": messages, "events": events,
+            "plan": load_plan(job.dir), "state": registry.state(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/rewind")
+def rewind(job_id: str, req: RewindRequest) -> dict:
+    """Undo a turn: restore the job's files and cut the conversation there."""
+    from gisagent.agent.loop import Conversation
+    from gisagent.checkpoints import Checkpoints
+
+    job = _job_or_404(job_id)
+    if registry.state(job_id) == "running":
+        raise HTTPException(409, "the agent is working; cancel it first")
+    cps = Checkpoints(job.dir)
+    match = next((c for c in cps.list() if c["message_index"] == req.message_index), None)
+    if match is None:
+        raise HTTPException(404, "no checkpoint for that message")
+    meta = cps.restore(match["id"])
+    # the plan is part of the snapshot, so it went back with the files
+    Conversation(job.dir / "conversation.json").truncate(meta["message_index"])
+    # the replay log goes back to the same point as the files and the chat
+    events = job.dir / "events.jsonl"
+    if "events_offset" in meta and events.exists():
+        with events.open("r+b") as fh:
+            fh.truncate(meta["events_offset"])
+    return {"rewound_to": match["id"], "label": meta["label"]}
+
+
+def _log_event(job, payload: dict) -> None:
+    """Append to the job's replay log, which rebuilds the agent panel on load."""
+    with (job.dir / "events.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, default=str) + "\n")
 
 
 @app.delete("/api/jobs/{job_id}/conversation")
@@ -538,6 +653,7 @@ def reset_conversation(job_id: str) -> dict:
         raise HTTPException(404, f"no such job: {job_id}")
     Conversation(job.dir / "conversation.json").reset()
     (job.dir / "events.jsonl").write_text("", encoding="utf-8")
+    (job.dir / "plan.json").unlink(missing_ok=True)
     return {"reset": job_id}
 
 
@@ -556,25 +672,42 @@ async def chat(job_id: str, req: ChatRequest) -> dict:
     if not req.message.strip():
         raise HTTPException(400, "message must not be empty")
 
+    if req.mode not in ("work", "plan"):
+        raise HTTPException(400, "mode must be 'work' or 'plan'")
+
+    from gisagent.checkpoints import Checkpoints
+
     convo = Conversation(job.dir / "conversation.json")
     events_path = job.dir / "events.jsonl"
+    checkpoints = Checkpoints(job.dir)
 
     async def _run() -> None:
         registry.set_state(job_id, "running")
+        index = len(convo.messages)
+        offset = events_path.stat().st_size if events_path.exists() else 0
+        # snapshot before the turn, so it can be rewound files and all
+        cp = await asyncio.to_thread(checkpoints.begin, req.message, index,
+                                     events_offset=offset)
+        _log_event(job, {"type": "user", "text": req.message, "index": index,
+                         "mode": req.mode, "checkpoint": cp})
+        await registry.publish(job_id, {"type": "checkpoint", "id": cp,
+                                        "message_index": index})
         agent = RoadAgent(model=req.model, max_steps=req.max_steps)
         try:
-            async for ev in agent.chat(convo, req.message,
-                                       context=_job_context(job)):
+            async for ev in agent.chat(convo, req.message, job_id=job_id,
+                                       mode=req.mode):
                 payload = ev.to_dict()
-                with events_path.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(payload, default=str) + "\n")
+                _log_event(job, payload)
                 await registry.publish(job_id, payload)
         except asyncio.CancelledError:
-            await registry.publish(job_id, {"type": "error", "text": "cancelled"})
+            _log_event(job, {"type": "error", "text": "stopped by the person"})
+            await registry.publish(job_id, {"type": "error", "text": "stopped by the person"})
             raise
         except Exception as exc:
+            _log_event(job, {"type": "error", "text": str(exc)})
             await registry.publish(job_id, {"type": "error", "text": str(exc)})
         finally:
+            checkpoints.end()
             registry.set_state(job_id, "idle")
             await registry.publish(job_id, {"type": "eof"})
 

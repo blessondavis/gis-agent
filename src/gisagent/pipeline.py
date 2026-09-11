@@ -91,6 +91,19 @@ class Job:
         return self.dir / "roads.geojson"
 
     @property
+    def edits_path(self) -> Path:
+        return self.dir / "edits.json"
+
+    @property
+    def network_path(self) -> Path:
+        """The deliverable: machine centrelines with the person's edits applied."""
+        return self.dir / "network.geojson"
+
+    @property
+    def suggestions_path(self) -> Path:
+        return self.dir / "suggestions.geojson"
+
+    @property
     def preview_dir(self) -> Path:
         return self.dir / "preview"
 
@@ -112,6 +125,12 @@ class Job:
 
     def has_truth(self) -> bool:
         return self.truth_path.exists()
+
+    def _preserve(self, path: Path) -> None:
+        """Let an active checkpoint keep the old copy before it is overwritten."""
+        from gisagent.checkpoints import Checkpoints
+
+        Checkpoints(self.dir).preserve(path)
 
     def status(self) -> dict:
         return {
@@ -242,6 +261,7 @@ class Job:
         for i, spec in enumerate(specs):
             res = segmenter.segment(spec.path, prompt=prompt,
                                     threshold=threshold, upscale=upscale)
+            self._preserve(self.conf_dir / f"{spec.chip_id}.npy")
             np.save(self.conf_dir / f"{spec.chip_id}.npy",
                     res.confidence.astype(np.float32))
             per_chip[spec.chip_id] = res.to_dict()
@@ -284,6 +304,7 @@ class Job:
             raise RuntimeError("no chip confidences found; run segmentation first")
 
         overlap = self.manifest.get("tiling", {}).get("overlap", 128)
+        self._preserve(self.conf_path)
         stitch_masks(conf, specs, self.image_path, self.conf_path,
                      overlap=overlap, threshold=None)
         stitch_masks(conf, specs, self.image_path, self.mask_path,
@@ -364,6 +385,7 @@ class Job:
         for i, spec in enumerate(targets):
             res = segmenter.segment(spec.path, prompt=prompt,
                                     threshold=threshold, upscale=upscale)
+            self._preserve(self.conf_dir / f"{spec.chip_id}.npy")
             np.save(self.conf_dir / f"{spec.chip_id}.npy",
                     res.confidence.astype(np.float32))
             if progress is not None:
@@ -397,7 +419,229 @@ class Job:
         self.manifest["vector_stats"] = result
         self.record("vectorized", {k: v for k, v in kwargs.items()}, result,
                     time.perf_counter() - t0)
+        # the machine layer changed underneath any human edits; replay them
+        self.rebuild_network()
         return result
+
+    # -- human edits -------------------------------------------------------- #
+
+    def edit_log(self):
+        from gisagent.vector.edits import EditLog
+
+        return EditLog(self.edits_path)
+
+    def rebuild_network(self) -> dict:
+        """Merge the edit log over the machine centrelines into network.geojson.
+
+        Deliberately writes nothing to job.json: the web process (edits) and
+        the MCP process (vectorising) both call this, and the manifest is the
+        one file they would otherwise race on. Stats ride in the GeoJSON.
+        """
+        from gisagent.vector.edits import merge_network
+
+        machine = (json.loads(self.vector_path.read_text(encoding="utf-8"))
+                   if self.vector_path.exists() else None)
+        fc, _ = merge_network(machine, self.edit_log().state(),
+                              crs_hint=(self.manifest.get("region") or {}).get("crs"))
+        tmp = self.network_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(fc), encoding="utf-8")
+        tmp.replace(self.network_path)
+        return fc
+
+    def network(self) -> dict:
+        if not self.network_path.exists() or (
+            self.vector_path.exists()
+            and self.vector_path.stat().st_mtime > self.network_path.stat().st_mtime
+        ):
+            return self.rebuild_network()
+        return json.loads(self.network_path.read_text(encoding="utf-8"))
+
+    def suggest(self, threshold: float = 0.25, limit: int = 60) -> dict:
+        from gisagent.vector.edits import suggest_roads
+
+        if not self.conf_path.exists():
+            raise RuntimeError("no confidence map yet - segment and stitch first")
+        fc = suggest_roads(self.conf_path, self.network(),
+                           self.edit_log().state().dismissed,
+                           threshold=threshold, limit=limit)
+        self.suggestions_path.write_text(json.dumps(fc), encoding="utf-8")
+        return fc
+
+    # -- candidates: several settings side by side, then apply one --------- #
+
+    VECTOR_KEYS = ("min_object_px", "min_hole_px", "close_radius",
+                   "simplify_tolerance_m", "min_length_m")
+
+    # (type, min, max) per setting. Variants come from a model writing JSON,
+    # so they are validated rather than trusted: a live run sent
+    # "mask_threshold" (silently ignored -> five identical candidates) and
+    # close_radius 0.5 (an empty morphology footprint -> a crash).
+    VARIANT_SPEC = {
+        "threshold": (float, 0.01, 0.99),
+        "min_object_px": (int, 0, 100_000),
+        "min_hole_px": (int, 0, 100_000),
+        "close_radius": (int, 0, 10),
+        "simplify_tolerance_m": (float, 0.0, 20.0),
+        "min_length_m": (float, 0.0, 500.0),
+    }
+    VARIANT_ALIASES = {"mask_threshold": "threshold", "thr": "threshold"}
+
+    @classmethod
+    def normalise_variant(cls, variant: dict) -> dict:
+        if not isinstance(variant, dict):
+            raise ValueError(f"a variant must be an object, got {variant!r}")
+        out = {}
+        for key, value in variant.items():
+            key = cls.VARIANT_ALIASES.get(key, key)
+            if key not in cls.VARIANT_SPEC:
+                raise ValueError(f"unknown setting {key!r}; allowed: "
+                                 f"{', '.join(cls.VARIANT_SPEC)}")
+            typ, lo, hi = cls.VARIANT_SPEC[key]
+            try:
+                x = int(round(float(value))) if typ is int else float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be a number, got {value!r}") from None
+            if not lo <= x <= hi:
+                raise ValueError(f"{key}={value} is outside [{lo}, {hi}]")
+            out[key] = x
+        out.setdefault("threshold", 0.5)
+        return out
+
+    def try_candidates(self, variants: list[dict], *, objective: str = "balanced",
+                       slack_px: int = 3, workers: int = 3) -> dict:
+        """Build and score each variant in isolation; change nothing live.
+
+        Each variant is a mask threshold plus optional vectoriser settings,
+        applied to the *existing* confidence map -- no re-inference, so a
+        handful of candidates costs seconds, not minutes. Every candidate gets
+        its own directory (the worktree idea: isolated state, explicit apply)
+        and the person's edits are merged over each, so the ranking is of the
+        network they would actually get.
+
+        Judge: an F-beta of precision and recall of the network *by length*,
+        with beta set by ``objective`` -- "balanced" (1), "precision" (0.5:
+        a wrong road costs more than a missing one) or "recall" (2). With
+        ground truth those are correctness and completeness; without it, their
+        expected values under the model's own confidence.
+
+        The label-free judge was measured, not assumed. On Boston, over seven
+        variants, it picked the ground-truth winner under all three objectives
+        (Spearman 0.89 / 0.96 / 1.00), where topology ranked the same
+        candidates backwards (-0.64). Topology is still reported, as a
+        diagnostic.
+        """
+        from gisagent.evaluate.network import BETA, expected_scores, f_beta
+
+        if objective not in BETA:
+            raise ValueError(f"objective must be one of {list(BETA)}")
+        beta = BETA[objective]
+        import shutil
+        from concurrent.futures import ThreadPoolExecutor
+
+        from gisagent.evaluate.metrics import compare_masks
+        from gisagent.evaluate.network import score_network
+        from gisagent.vector.edits import merge_network
+        from gisagent.vector.roads import vectorize_roads
+        from gisagent.vector.topology import analyse
+
+        if not variants:
+            raise ValueError("give at least one variant")
+        # validate everything before spending any time; drop exact repeats
+        unique: dict[str, dict] = {}
+        for v in variants:
+            n = self.normalise_variant(v)
+            unique.setdefault(json.dumps(n, sort_keys=True), n)
+        variants = list(unique.values())
+        if not self.conf_path.exists():
+            raise RuntimeError("no stitched confidence map yet - run stitch_result first")
+        with rasterio.open(self.conf_path) as ds:
+            conf = ds.read(1).astype(np.float32)
+            profile = ds.profile.copy()
+            conf_tf, conf_crs = ds.transform, ds.crs
+        profile.update(dtype="uint8", count=1, nodata=None)
+        truth = None
+        if self.has_truth():
+            with rasterio.open(self.truth_path) as ds:
+                truth = ds.read(1) > 127
+
+        root = self.dir / "candidates"
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True)
+        edits = self.edit_log().state()
+        crs_hint = (self.manifest.get("region") or {}).get("crs")
+
+        def build(i: int, v: dict) -> dict:
+            cid = f"c{i + 1}"
+            d = root / cid
+            d.mkdir()
+            thr = v["threshold"]
+            vec_kw = {k: v[k] for k in self.VECTOR_KEYS if k in v}
+            mask = conf > thr
+            with rasterio.open(d / "mask.tif", "w", **profile) as dst:
+                dst.write(mask.astype("uint8") * 255, 1)
+            vectorize_roads(d / "mask.tif", d / "roads.geojson", to_wgs84=True,
+                            confidence_path=self.conf_path, **vec_kw)
+            machine = json.loads((d / "roads.geojson").read_text(encoding="utf-8"))
+            net, nstats = merge_network(machine, edits, crs_hint=crs_hint)
+            topo = analyse(net)
+            exp = expected_scores(net, conf, conf_tf, conf_crs)
+            row = {"id": cid, "params": {"threshold": thr, **vec_kw},
+                   "n_features": nstats.n_features,
+                   "length_km": round(nstats.total_length_m / 1000, 2),
+                   "expected_precision": round(exp["precision"], 4),
+                   "expected_recall": round(exp["recall"], 4),
+                   "expected_f1": round(exp["f1"], 4),
+                   "topology_score": round(topo.score, 4),
+                   "components": topo.n_components, "dangles": topo.n_dangles}
+            if truth is not None:
+                m = compare_masks(mask, truth, slack_px=slack_px).to_dict()
+                s = score_network(net, self.truth_path)["overall"]
+                row.update({k: m[k] for k in ("iou", "f1", "relaxed_f1")},
+                           completeness=s["completeness"],
+                           correctness=s["correctness"], quality=s["quality"])
+                row["score"] = round(f_beta(s["correctness"], s["completeness"], beta), 4)
+            else:
+                row["score"] = round(f_beta(exp["precision"], exp["recall"], beta), 4)
+            return row
+
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(variants)))) as ex:
+            rows = list(ex.map(lambda a: build(*a), enumerate(variants)))
+
+        labelled = truth is not None
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        basis = ("correctness/completeness vs ground truth" if labelled
+                 else "expected precision/recall under the model's confidence")
+        result = {"labelled": labelled, "objective": objective,
+                  "ranked_by": f"score = F{beta:g} of {basis}",
+                  "best": rows[0]["id"], "candidates": rows}
+        (root / "index.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
+        return result
+
+    def apply_candidate(self, candidate_id: str) -> dict:
+        """Make a scored candidate the live result (re-stitch + re-vectorise)."""
+        idx_path = self.dir / "candidates" / "index.json"
+        if not idx_path.exists():
+            raise RuntimeError("no candidates yet - run try_candidates first")
+        index = json.loads(idx_path.read_text(encoding="utf-8"))
+        row = next((r for r in index["candidates"] if r["id"] == candidate_id), None)
+        if row is None:
+            raise ValueError(f"no candidate {candidate_id!r}; have "
+                             f"{[r['id'] for r in index['candidates']]}")
+        params = dict(row["params"])
+        threshold = params.pop("threshold")
+        out = {"applied": candidate_id, "params": row["params"],
+               "stitch": self.stitch(threshold=threshold),
+               "vector": self.vectorize(**params)}
+        if self.has_truth():
+            out["metrics"] = self.evaluate()
+        return out
+
+    def score_network(self, tolerance_m: float = 5.0) -> dict:
+        from gisagent.evaluate.network import score_network
+
+        if not self.has_truth():
+            raise RuntimeError("no ground truth available for this job")
+        return score_network(self.network(), self.truth_path, tolerance_m=tolerance_m)
 
     # -- stage 6: evaluate -------------------------------------------------- #
 

@@ -1,5 +1,8 @@
 // gis-agent workspace: map + conversational agent, no framework, no build step.
 import { api, $, el, toast, fmt } from "/static/app.js";
+import { createEditor } from "/static/editor.js";
+
+let editor = null;
 
 const state = {
   job: localStorage.getItem("gisagent.job") || "",
@@ -14,13 +17,31 @@ const state = {
 /* ------------------------------------------------------------------ map */
 
 function initMap() {
-  state.map = L.map("map", { zoomControl: true, preferCanvas: true })
-    .setView([42.78, -71.18], 14);
+  // One canvas renderer for every vector layer. Leaflet only routes a click to
+  // paths on the canvas that received it, so a second canvas stacked on top
+  // (as preferCanvas creates for later layers) silently eats clicks on roads.
+  // The tolerance makes 2 px centrelines clickable.
+  state.map = L.map("map", {
+    zoomControl: true,
+    renderer: L.canvas({ padding: 0.5, tolerance: 7 }),
+  }).setView([42.78, -71.18], 14);
   state.layers.base = L.tileLayer(
     "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     { maxZoom: 19, opacity: 0.6, attribution: "&copy; OpenStreetMap" }
   );
   enableAreaPicking();
+  editor = createEditor({
+    map: state.map,
+    getJob: () => state.job,
+    onNetwork: (fc, stats) => { showNetwork(fc); renderCompletion(stats); },
+  });
+}
+
+/** Swap in a new network layer, keeping the user's layer toggle. */
+function showNetwork(fc) {
+  if (state.layers.vec) state.map.removeLayer(state.layers.vec);
+  state.layers.vec = editor.render(fc);
+  applyToggles();
 }
 
 /** Drag a rectangle on the map without pulling in another library. */
@@ -29,9 +50,11 @@ function enableAreaPicking() {
   let start = null, ghost = null, armed = false;
 
   const arm = (on) => {
+    if (on) editor?.reset();
     armed = on;
     document.body.classList.toggle("picking", on);
-    $("#btn-pick").textContent = on ? "Cancel selection" : "Select area to rework";
+    $("#btn-pick").textContent = on ? "Cancel selection" : "Rework area with agent";
+    $("#mapnote").textContent = on ? "Drag a box over the area the agent should redo." : "";
     map.dragging[on ? "disable" : "enable"]();
   };
 
@@ -40,7 +63,7 @@ function enableAreaPicking() {
     if (state.rect) { map.removeLayer(state.rect); state.rect = null; }
     state.bbox = null;
     $("#btn-clearpick").style.display = "none";
-    $("#mapnote").textContent = "Drag a box on the map, then tell the agent what is wrong there.";
+    $("#mapnote").textContent = "";
     refreshSuggestions();
   });
 
@@ -77,14 +100,6 @@ function enableAreaPicking() {
     refreshSuggestions();
     $("#msg").focus();
   });
-}
-
-/** Colour a centreline by how confident the model was about it. */
-function roadStyle(feature) {
-  const c = feature?.properties?.confidence ?? 0;
-  // low confidence fades toward orange, high stays bright yellow
-  const colour = c >= 0.7 ? "#ffd028" : c >= 0.45 ? "#ffa53b" : "#ff6b6b";
-  return { color: colour, weight: c >= 0.7 ? 2.6 : 2, opacity: 0.45 + 0.5 * Math.min(c, 1) };
 }
 
 function clearOverlays() {
@@ -159,17 +174,10 @@ async function loadJob() {
   if (p.mask) state.layers.mask = L.imageOverlay(bust(p.mask.url), p.mask.bounds, { opacity: op });
   if (p.truth) state.layers.truth = L.imageOverlay(bust(p.truth.url), p.truth.bounds, { opacity: op });
 
+  let network = null;
   try {
-    const gj = await api.get(`/api/jobs/${state.job}/roads.geojson?t=${Date.now()}`);
-    state.layers.vec = L.geoJSON(gj, {
-      style: roadStyle,
-      onEachFeature: (f, lyr) => {
-        const pr = f.properties || {};
-        lyr.bindPopup(
-          `<b>road centreline</b><br>length ${Number(pr.length_m || 0).toFixed(1)} m` +
-          `<br>confidence <b>${pr.confidence_pct ?? "?"}%</b>`);
-      },
-    });
+    network = await api.get(`/api/jobs/${state.job}/network.geojson?t=${Date.now()}`);
+    state.layers.vec = editor.render(network);
   } catch { /* not vectorized yet */ }
 
   applyToggles();
@@ -179,8 +187,61 @@ async function loadJob() {
   }
 
   renderMetrics(status.metrics);
+  state.lastIoU = status.metrics?.iou;
   renderVectors(status.vector_stats, status.manifest?.refinements);
+  state.hasTruth = Boolean(status.region?.truth);
+  renderCompletion(network?.stats);
   refreshSuggestions();
+}
+
+/* How finished the network is, and who did the finishing. With ground truth
+   the question "how much of the road network is there" has a direct answer
+   (length-based completeness); without it, the split of work is still useful. */
+let scoreTimer = null;
+
+function renderCompletion(stats) {
+  const box = $("#completion");
+  if (!stats) {
+    box.replaceChildren(el("p", { class: "empty" }, "no network yet"));
+    $("#comp-note").textContent = "";
+    return;
+  }
+  const km = (m) => (m / 1000).toFixed(m < 10000 ? 2 : 1);
+  const share = stats.human_share || 0;
+  $("#comp-note").textContent = stats.n_ops ? `${stats.n_ops} edit${stats.n_ops === 1 ? "" : "s"}` : "";
+  box.replaceChildren(
+    el("div", { class: "splitbar", title: "share of network length by source" },
+      el("span", { class: "model", style: `flex:${Math.max(1 - share, 0.001)}` }),
+      el("span", { class: "human", style: `flex:${Math.max(share, 0.001)}` })),
+    el("dl", { class: "kv" },
+      el("dt", {}, "model"), el("dd", {}, `${km(stats.model_length_m)} km · ${stats.n_model}`),
+      el("dt", {}, "drawn by you"), el("dd", {}, `${km(stats.human_length_m)} km · ${stats.n_human}`),
+      el("dt", {}, "removed"), el("dd", {}, String(stats.n_deleted + stats.n_superseded))),
+    el("div", { id: "comp-score" }));
+  $("#btn-undo").disabled = !stats.can_undo;
+  $("#btn-redo").disabled = !stats.can_redo;
+  if (state.hasTruth) {
+    clearTimeout(scoreTimer);
+    scoreTimer = setTimeout(loadNetworkScore, 400);
+  }
+}
+
+async function loadNetworkScore() {
+  const box = $("#comp-score");
+  if (!box || !state.job) return;
+  let s;
+  try { s = await api.get(`/api/jobs/${state.job}/network/score`); } catch { return; }
+  const pct = (v) => `${(100 * v).toFixed(1)}%`;
+  const gain = (v) => v ? el("span", { class: v > 0 ? "up" : "down" },
+    ` ${v > 0 ? "+" : ""}${(100 * v).toFixed(1)}`) : null;
+  box.replaceChildren(
+    el("div", { class: "comp" },
+      el("div", { class: "v" }, pct(s.overall.completeness), gain(s.edit_gain.completeness)),
+      el("div", { class: "k" }, `of real roads found (model alone ${pct(s.model_only.completeness)})`)),
+    el("div", { class: "comp" },
+      el("div", { class: "v" }, pct(s.overall.correctness), gain(s.edit_gain.correctness)),
+      el("div", { class: "k" }, `of drawn roads are real (model alone ${pct(s.model_only.correctness)})`)),
+    el("p", { class: "hint" }, `Length-based, within ${s.tolerance_m} m of the reference centreline.`));
 }
 
 const bust = (u) => `${u}?t=${Date.now()}`;
@@ -241,81 +302,219 @@ function renderVectors(v, refinements) {
   box.replaceChildren(...rows.flatMap(([k, val]) =>
     [el("dt", {}, k), el("dd", {}, String(val))]));
   const dl = $("#download");
-  dl.href = `/api/jobs/${state.job}/roads.geojson`;
-  dl.download = `${state.job}-roads.geojson`;
+  dl.href = `/api/jobs/${state.job}/network.geojson`;
+  dl.download = `${state.job}-network.geojson`;
   dl.style.display = "inline";
 }
 
 /* ------------------------------------------------------------------ chat */
 
-function addMessage(role, text) {
+/* The agent panel renders typed events from the harness: each kind of thing
+   is shown as what it is -- a plan checklist, a tool call that resolves in
+   place, a measured change, a verification -- instead of one scrolling log. */
+
+const calls = new Map();       // call_id -> step element, so results land on their call
+const CHANGES_MAP = new Set(["stitch_result", "vectorize_result", "refine_area",
+                             "apply_candidate", "repair_geometry"]);
+
+function chatlog() {
   const log = $("#chatlog");
   if (log.querySelector(".empty")) log.replaceChildren();
-  log.append(el("div", { class: `msg ${role}` },
-    el("div", { class: "who" }, role === "user" ? "you" : "agent"),
-    el("div", { class: "bubble" }, text)));
-  log.scrollTop = log.scrollHeight;
+  return log;
+}
+
+function scrollDown() { const l = $("#chatlog"); l.scrollTop = l.scrollHeight; }
+
+/* The small subset of Markdown agents actually write -- bold, inline code,
+   bullets, headings -- built as DOM nodes, never innerHTML, so model output
+   cannot inject markup. */
+function inlineMd(text) {
+  const out = [];
+  const re = /(\*\*[^*\n]+\*\*|`[^`\n]+`)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0];
+    out.push(t.startsWith("**") ? el("strong", {}, t.slice(2, -2)) : el("code", {}, t.slice(1, -1)));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function markdown(text) {
+  const blocks = [];
+  let list = null;
+  for (const raw of String(text).split("\n")) {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^\s*[-*•]\s+(.*)/);
+    if (bullet) {
+      if (!list) { list = el("ul"); blocks.push(list); }
+      list.append(el("li", {}, inlineMd(bullet[1])));
+      continue;
+    }
+    list = null;
+    const head = line.match(/^#{1,4}\s+(.*)/);
+    if (head) blocks.push(el("div", { class: "md-h" }, inlineMd(head[1])));
+    else if (!line.trim()) blocks.push(el("div", { class: "md-gap" }));
+    else blocks.push(el("div", {}, inlineMd(line)));
+  }
+  return blocks;
+}
+
+function addMessage(role, text, meta = {}) {
+  const node = role === "user"
+    ? el("div", { class: "msg user" }, text)
+    : el("div", { class: "msg bot md" }, markdown(text));
+  if (role === "user" && meta.checkpoint !== undefined) attachRewind(node, meta.index);
+  chatlog().append(node);
+  scrollDown();
+  return node;
+}
+
+function attachRewind(node, index) {
+  node.dataset.index = index;
+  node.append(el("button", {
+    class: "rewind", title: "Rewind: put the map, results and your edits back " +
+      "to how they were just before this message, and drop everything after it",
+    onclick: () => rewind(index),
+  }, "↺"));
+}
+
+async function rewind(index) {
+  if (state.busy) return toast("the agent is working; wait or stop it first", true);
+  if (!confirm("Rewind to before this message? Results, map and your edits go " +
+               "back to that point; later messages are removed.")) return;
+  try {
+    const r = await api.post(`/api/jobs/${state.job}/rewind`, { message_index: index });
+    toast(`Rewound to before “${r.label.slice(0, 40)}”`);
+    await Promise.all([loadJob(), loadConversation()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+function argText(args) {
+  return Object.entries(args || {}).filter(([k]) => k !== "job_id")
+    .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join("  ");
+}
+
+function renderPlan(plan) {
+  const box = $("#planbox");
+  if (!plan?.steps?.length) { box.hidden = true; return; }
+  const icon = { pending: "○", in_progress: "◐", done: "●", skipped: "–" };
+  const done = plan.steps.filter(s => s.status === "done").length;
+  box.hidden = false;
+  box.replaceChildren(
+    el("div", { class: "plan-head" }, el("strong", {}, "Plan"),
+      el("span", { class: "dimtext" }, `${done}/${plan.steps.length}`)),
+    el("ol", {}, plan.steps.map(s =>
+      el("li", { class: s.status }, el("span", { class: "ic" }, icon[s.status] || "○"), s.title))));
+}
+
+function metricDelta(ev) {
+  // a measured change is the most interesting event in the stream
+  const r = ev.result || {};
+  const now = r.iou ?? r.metrics?.iou;
+  if (now === undefined) return null;
+  const before = state.lastIoU;
+  state.lastIoU = now;
+  if (before === undefined || before === null || Math.abs(now - before) < 0.0005) return null;
+  return el("div", { class: "delta" }, "IoU ", el("span", {}, before.toFixed(3)),
+    el("span", { class: "arrow" }, "→"),
+    el("span", { class: "to " + (now > before ? "up" : "down") }, now.toFixed(3)));
 }
 
 function addActivity(ev) {
-  const log = $("#chatlog");
-  if (log.querySelector(".empty")) log.replaceChildren();
-
-  if (ev.type === "message" || ev.type === "done") {
-    if (ev.text) addMessage("agent", ev.text);
+  if (ev.type === "connected" || ev.type === "status") return;
+  if (ev.type === "eof") { setBusy(false); loadJob(); return; }
+  if (ev.type === "checkpoint") {
+    const last = [...$("#chatlog").querySelectorAll(".msg.user")].pop();
+    if (last && !last.querySelector(".rewind")) attachRewind(last, ev.message_index);
     return;
   }
-  if (ev.type === "eof") { setBusy(false); loadJob(); return; }
-  if (ev.type === "connected" || ev.type === "status") return;
-
-  const line = el("div", { class: "line" });
-  if (ev.type === "tool_call") {
-    line.append(el("span", { class: "spinner" }), el("span", { class: "name" }, ev.tool));
-  } else if (ev.type === "tool_result") {
-    line.append(el("span", { style: "color:var(--good)" }, "✓"),
-                el("span", { class: "name" }, ev.tool));
-  } else if (ev.type === "thinking") {
-    line.append(el("span", { class: "name", style: "color:var(--warn)" }, "reasoning"));
-  } else if (ev.type === "error") {
-    line.append(el("span", { style: "color:var(--bad)" }, "✕"),
-                el("span", { class: "name" }, "error"));
+  if (ev.type === "plan") return renderPlan(ev.result);
+  if (ev.type === "message" || ev.type === "done") {
+    // "done" repeats the final message; show it once
+    if (ev.text && ev.type === "message") addMessage("agent", ev.text);
+    return;
   }
-  if (ev.duration_s) line.append(el("span", { class: "time" }, `${ev.duration_s.toFixed(1)}s`));
+  const log = chatlog();
 
-  const node = el("div", { class: `act ${ev.type}` }, line);
-
-  if (ev.type === "thinking" && ev.text) {
-    node.append(el("div", { class: "sum" }, ev.text));
+  if (ev.type === "plan_ready") {
+    log.append(el("div", { class: "approve" },
+      el("span", {}, "Plan ready. Nothing has been changed yet."),
+      el("button", { class: "sm", onclick: (e) => {
+        e.target.closest(".approve").remove();
+        send("Approved. Carry out the plan.", { mode: "work" });
+      } }, "Approve & run"),
+      el("button", { class: "sm ghost", onclick: (e) => {
+        e.target.closest(".approve").remove(); $("#msg").focus();
+      } }, "Revise")));
+    return scrollDown();
   }
-  if (ev.type === "tool_call" && Object.keys(ev.args || {}).length) {
-    const args = Object.entries(ev.args)
-      .filter(([k]) => k !== "job_id")
-      .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join("  ");
-    if (args) node.append(el("div", { class: "sum" }, args));
-  }
-  if (ev.type === "tool_result") {
-    if (ev.summary) node.append(el("div", { class: "sum" }, ev.summary));
-    const det = el("details", {}, el("summary", {}, "raw"),
-      el("pre", {}, JSON.stringify(ev.result, null, 1).slice(0, 4000)));
-    node.append(det);
-    // a tool that changed the output means the map is stale
-    if (["stitch_result", "vectorize_result", "refine_area"].includes(ev.tool)) {
-      setTimeout(loadJob, 300);
+  if (ev.type === "thinking") {
+    // Reasoning models put their whole chain of thought in the content --
+    // thousands of characters per step. Keep the first sentence in view and
+    // fold the rest away.
+    const text = ev.text || "";
+    if (text.length <= 280) {
+      log.append(el("div", { class: "narration" }, text));
+    } else {
+      const first = (text.match(/^[\s\S]{20,240}?[.!?](\s|$)/) || [text.slice(0, 200) + "…"])[0].trim();
+      log.append(el("details", { class: "step", "data-kind": "think" },
+        el("summary", {}, el("span", { class: "sumtext" }, first),
+          el("span", { class: "count" }, `${text.split(/\s+/).length} words`)),
+        el("div", { class: "body" }, text)));
     }
+    return scrollDown();
   }
-  if (ev.type === "error" && ev.text) {
-    node.append(el("div", { class: "sum" }, ev.text));
+  if (ev.type === "edit") {
+    const accepted = ev.op === "add" && (ev.note || "").startsWith("accepted suggestion");
+    const what = accepted ? "accepted a suggestion" :
+      ({ add: "drew a road", delete: "deleted a road", replace: "reshaped a road",
+         dismiss: "dismissed a suggestion" }[ev.op] || ev.op);
+    const verb = ev.action === "undo" ? `undid: ${what}` : ev.action === "redo" ? `redid: ${what}` : what;
+    log.append(el("details", { class: "step", "data-kind": "edit" },
+      el("summary", {}, `you ${verb}`,
+        el("span", { class: "count" }, `${(ev.stats.human_length_m / 1000).toFixed(2)} km yours`))));
+    return scrollDown();
   }
-
-  // replace the pending spinner for a call once its result lands
+  if (ev.type === "verify") {
+    log.append(el("details", { class: "step" + (ev.ok ? "" : " fail"), "data-kind": ev.ok ? "ok" : "fail" },
+      el("summary", {}, el("span", { class: "tag " + (ev.ok ? "ok" : "fail") }, ev.ok ? "verified" : "check"),
+        ev.ok ? "result measured; quoted scores match tool output" : "harness sent the agent back"),
+      el("div", { class: "body" }, ev.text)));
+    return scrollDown();
+  }
+  if (ev.type === "error") {
+    log.append(el("details", { class: "step fail", "data-kind": "fail", open: "" },
+      el("summary", {}, el("span", { class: "tag fail" }, "error"), "stopped"),
+      el("div", { class: "body" }, ev.text || "")));
+    return scrollDown();
+  }
+  if (ev.type === "tool_call") {
+    const node = el("details", { class: "step", "data-kind": "work" },
+      el("summary", {}, el("span", { class: "spinner" }), el("b", {}, ev.tool),
+        el("span", { class: "dimtext argline" }, argText(ev.args))),
+      el("div", { class: "body" }, argText(ev.args) || "(no arguments)"));
+    calls.set(ev.call_id, node);
+    log.append(node);
+    return scrollDown();
+  }
   if (ev.type === "tool_result") {
-    const pending = [...log.querySelectorAll(".act.tool_call")].reverse()
-      .find(n => n.querySelector(".name")?.textContent === ev.tool && n.dataset.done !== "1");
-    if (pending) { pending.dataset.done = "1"; pending.querySelector(".spinner")?.remove(); }
+    let node = calls.get(ev.call_id);
+    if (!node) { node = el("details", { class: "step" }, el("summary", {})); log.append(node); }
+    node.dataset.kind = ev.ok ? "ok" : "fail";
+    if (!ev.ok) node.classList.add("fail");
+    node.querySelector("summary").replaceChildren(
+      el("b", {}, ev.tool), el("span", { class: "sumtext" }, ev.summary || (ev.ok ? "done" : "failed")),
+      el("span", { class: "count" }, `${(ev.duration_s || 0).toFixed(1)}s`));
+    node.querySelector(".body")?.append(
+      "\n\n", JSON.stringify(ev.result, null, 1).slice(0, 3000));
+    const d = metricDelta(ev);
+    if (d) node.after(d);
+    if (CHANGES_MAP.has(ev.tool) && ev.ok && !state.replaying) setTimeout(loadJob, 300);
+    return scrollDown();
   }
-
-  log.append(node);
-  log.scrollTop = log.scrollHeight;
 }
 
 function connectSocket() {
@@ -332,9 +531,34 @@ async function loadConversation() {
   const log = $("#chatlog");
   log.replaceChildren();
   if (!state.job) return;
+  calls.clear();
+  renderPlan(null);
   try {
     const c = await api.get(`/api/jobs/${state.job}/conversation`);
-    for (const m of c.messages) addMessage(m.role === "user" ? "user" : "agent", m.content);
+    const replayable = c.events.some(e => e.type === "user");
+    if (replayable) {
+      // session replay: rebuild the whole panel -- plan, tool cards, checks,
+      // edits -- from the job's event log, exactly as it streamed
+      state.replaying = true;
+      state.lastIoU = undefined;           // deltas are relative to the log's own history
+      for (const ev of c.events) {
+        if (ev.type === "user") {
+          addMessage("user", ev.text, ev.rewindable ? { checkpoint: true, index: ev.index } : {});
+        } else if (ev.type !== "eof" && ev.type !== "checkpoint") {
+          addActivity(ev);
+        }
+      }
+      state.replaying = false;
+      document.querySelectorAll(".approve").forEach((n, i, all) => {
+        if (i < all.length - 1) n.remove();   // only the latest plan is still pending
+      });
+    } else {
+      for (const m of c.messages) {
+        addMessage(m.role === "user" ? "user" : "agent", m.content,
+                   m.checkpoint ? { checkpoint: m.checkpoint, index: m.index } : {});
+      }
+    }
+    renderPlan(c.plan);
     if (!c.messages.length) {
       log.replaceChildren(el("p", { class: "empty" },
         "Ask the agent to annotate this region, or pick an area on the map and say what is wrong with it."));
@@ -345,18 +569,25 @@ async function loadConversation() {
 
 function setBusy(on) {
   state.busy = on;
-  $("#send").disabled = on;
+  const btn = $("#send");
+  btn.textContent = on ? "Stop" : "Send";
+  btn.classList.toggle("stop", on);
   const pill = $("#agentstate");
-  pill.className = "pill" + (on ? " ok" : "");
-  pill.replaceChildren(
-    on ? el("span", { class: "spinner" }) : el("span", { class: "dot" }),
-    on ? "working" : "idle");
+  pill.className = "pill" + (on ? " busy" : "");
+  pill.replaceChildren(el("span", { class: "dot" }), on ? "working" : "idle");
+  refreshSuggestions();
 }
 
-async function send(text) {
+async function stop() {
+  try { await api.post(`/api/jobs/${state.job}/chat/cancel`); } catch {}
+}
+
+async function send(text, opts = {}) {
   if (!state.job) return toast("create or pick a region first", true);
+  if (state.busy) return;
   const message = (text ?? $("#msg").value).trim();
   if (!message) return;
+  const mode = opts.mode || ($("#planfirst").checked ? "plan" : "work");
 
   // attach the drawn area so the agent gets exact coordinates
   let payload = message;
@@ -372,7 +603,7 @@ async function send(text) {
   setBusy(true);
   try {
     if (!state.socket || state.socket.readyState !== 1) connectSocket();
-    await api.post(`/api/jobs/${state.job}/chat`, { message: payload });
+    await api.post(`/api/jobs/${state.job}/chat`, { message: payload, mode });
   } catch (e) {
     setBusy(false);
     toast(e.message, true, 9000);
@@ -418,8 +649,18 @@ $("#opacity").addEventListener("input", (e) => {
   state.layers.truth?.setOpacity(v);
 });
 
+// edit tools
+for (const b of document.querySelectorAll("[data-tool]")) {
+  b.addEventListener("click", () => {
+    if (!state.job) return toast("create or pick a region first", true);
+    editor.setMode(b.dataset.tool);
+  });
+}
+$("#btn-undo").addEventListener("click", () => editor.history("undo"));
+$("#btn-redo").addEventListener("click", () => editor.history("redo"));
+
 // chat controls
-$("#send").addEventListener("click", () => send());
+$("#send").addEventListener("click", () => (state.busy ? stop() : send()));
 $("#msg").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
@@ -529,6 +770,8 @@ function wireTabs() {
 }
 
 initMap();
+// handle for the browser console and for UI automation
+window.gisWorkspace = { map: state.map, editor, state };
 wireTabs();
 loadHealth();
 await loadJobs();

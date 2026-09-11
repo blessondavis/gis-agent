@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 import warnings
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
+from pydantic import ConfigDict, with_config
 
 from mcp.server.mcpserver import MCPServer
 
@@ -42,11 +44,16 @@ mcp = MCPServer(
         "while topology sees fragmentation and misregistration but cannot "
         "tell a road from a river. Trust agreement; when they disagree, say so "
         "rather than picking one.\n\n"
-        "If quality is poor: change the threshold or re-run the weak area with "
-        "refine_area, then re-check. If the centrelines are broken rather than "
-        "wrong, repair_geometry is usually the cheaper fix - it reports the "
-        "topology before and after, so verify it actually improved things "
-        "instead of assuming."
+        "If quality is poor: compare settings with try_candidates (cheap, "
+        "isolated, ranked) and apply_candidate the winner, or re-run the weak "
+        "area with refine_area, then re-check. If the centrelines are broken "
+        "rather than wrong, repair_geometry is usually the cheaper fix - it "
+        "reports the topology before and after, so verify it actually "
+        "improved things instead of assuming.\n\n"
+        "A person may be finishing the network by hand in the map. Their edits "
+        "are layered over your output and survive any re-run; network_status "
+        "shows them. Never try to undo them. suggest_missing_roads finds "
+        "candidates for them to review."
     ),
 )
 
@@ -54,6 +61,20 @@ _segmenter = None
 
 
 _critic = None
+
+
+# Typed so the tool schema lists the settings a model may use. Extra keys are
+# let through to Job.normalise_variant, which knows the aliases and turns a
+# wrong key into an error naming the right ones -- pydantic's default would
+# drop it silently, which is exactly the bug this replaced.
+@with_config(ConfigDict(extra="allow"))
+class Variant(TypedDict, total=False):
+    threshold: float
+    min_object_px: int
+    min_hole_px: int
+    close_radius: int
+    simplify_tolerance_m: float
+    min_length_m: float
 
 
 def _get_segmenter(backend: str | None = None):
@@ -270,26 +291,29 @@ def inspect_chip(job_id: str, chip_id: str) -> dict:
 
 @mcp.tool(
     description=(
-        "Run SAM 3 road segmentation over the job's chips using a text prompt. "
-        "Wording changes results: 'road' is the baseline, but phrases like "
-        "'paved road', 'street', or 'highway' can behave differently. Raising "
-        "upscale makes thin roads bigger for the model at the cost of GPU "
-        "memory and time. Re-run with different settings to improve the score."
+        "Run road segmentation over the job's chips. Two backends: 'unet' "
+        "(default) was trained on 1 m/px aerial roads and is better everywhere, "
+        "much better in dense cities; 'sam3' is zero-shot and text-prompted. "
+        "prompt and threshold only affect sam3 - for sam3, wording matters "
+        "('road network' works, bare 'street' can return nothing). upscale "
+        "makes thin roads bigger at the cost of time."
     )
 )
-def segment_chips(job_id: str, prompt: str = "road", threshold: float = 0.4,
-                  upscale: int = 1, chip_ids: list[str] | None = None) -> dict:
+def segment_chips(job_id: str, prompt: str = "road network", threshold: float = 0.4,
+                  upscale: int = 1, chip_ids: list[str] | None = None,
+                  backend: str = "") -> dict:
     """
     Args:
         job_id: the job to segment.
-        prompt: text concept to segment, e.g. "road".
-        threshold: detection score cut-off for keeping an instance (0-1).
+        prompt: text concept to segment (sam3 only), e.g. "road network".
+        threshold: detection score cut-off for keeping an instance (sam3 only).
         upscale: integer upsampling factor applied before inference (1 = native).
         chip_ids: optionally restrict to specific chips.
+        backend: "unet" or "sam3"; empty uses the configured default.
     """
     try:
         job = pipeline.get_job(job_id)
-        seg = _get_segmenter()
+        seg = _get_segmenter(backend or None)
         result = job.segment(seg, prompt=prompt, threshold=threshold,
                              upscale=upscale, chip_ids=chip_ids)
         result.pop("per_chip", None)
@@ -403,7 +427,7 @@ def vectorize_result(job_id: str, min_object_px: int = 400, min_hole_px: int = 2
 )
 def refine_area(job_id: str, area: str = "", bbox_wgs84: list[float] | None = None,
                 prompt: str = "road network", threshold: float = 0.25,
-                upscale: int = 2, note: str = "") -> dict:
+                upscale: int = 2, note: str = "", backend: str = "") -> dict:
     """
     Args:
         job_id: the job to correct.
@@ -415,6 +439,7 @@ def refine_area(job_id: str, area: str = "", bbox_wgs84: list[float] | None = No
         threshold: detection score cut-off.
         upscale: upsampling factor; 2 often recovers roads the first pass missed.
         note: why this rework was requested, recorded in the job history.
+        backend: "unet" or "sam3"; empty uses the configured default.
     """
     try:
         job = pipeline.get_job(job_id)
@@ -438,7 +463,7 @@ def refine_area(job_id: str, area: str = "", bbox_wgs84: list[float] | None = No
             )
 
     try:
-        result = job.refine(_get_segmenter(), bbox_wgs84=bbox_wgs84,
+        result = job.refine(_get_segmenter(backend or None), bbox_wgs84=bbox_wgs84,
                             window=window, prompt=prompt, threshold=threshold,
                             upscale=upscale, note=note or area)
         stitch = job.stitch(threshold=0.5)
@@ -469,6 +494,100 @@ def _named_window(area: str, width: int, height: int):
     x0, x1 = xs.get(vx, (0, width))
     y0, y1 = ys.get(vy, (0, height))
     return (int(x0), int(y0), max(1, int(x1 - x0)), max(1, int(y1 - y0)))
+
+
+@mcp.tool(
+    description=(
+        "Try several post-processing settings side by side WITHOUT changing "
+        "the live result, and rank them. Each variant is a mask threshold plus "
+        "optional vectoriser settings (min_object_px, close_radius, "
+        "min_hole_px, simplify_tolerance_m, min_length_m), applied to the "
+        "existing confidence map - no re-inference, so 4-8 variants take "
+        "seconds. objective sets what 'best' means: 'precision' (a wrong road "
+        "costs more than a missing one), 'recall', or 'balanced'. Scored "
+        "against ground truth when labels exist, else by expected precision/"
+        "recall under the model's confidence (validated to pick the same "
+        "winner as ground truth). Then call apply_candidate with the winner."
+    )
+)
+def try_candidates(job_id: str, variants: list[Variant] | None = None,
+                   objective: str = "balanced") -> dict:
+    """
+    Args:
+        job_id: the job.
+        variants: e.g. [{"threshold": 0.4}, {"threshold": 0.6, "close_radius": 3}].
+            Defaults to a threshold ladder 0.3-0.7. Unknown keys are an error.
+        objective: "balanced", "precision" or "recall".
+    """
+    try:
+        job = pipeline.get_job(job_id)
+        variants = variants or [{"threshold": t} for t in (0.3, 0.4, 0.5, 0.6, 0.7)]
+        return _ok(**job.try_candidates(variants[:10], objective=objective))
+    except Exception as exc:
+        return _err(f"candidates failed: {exc}")
+
+
+@mcp.tool(
+    description=(
+        "Make one scored candidate from try_candidates the live result: "
+        "re-stitches at its threshold and re-vectorises with its settings. The "
+        "person's manual edits are preserved on top."
+    )
+)
+def apply_candidate(job_id: str, candidate_id: str) -> dict:
+    try:
+        return _ok(**pipeline.get_job(job_id).apply_candidate(candidate_id))
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@mcp.tool(
+    description=(
+        "What the person has done by hand, and how finished the network is: "
+        "roads they drew or removed, the share of the network that is theirs, "
+        "and - when labels exist - length-based completeness (share of real "
+        "roads found) and correctness, with and without their edits. Their "
+        "edits are authoritative; never try to redo or undo them."
+    )
+)
+def network_status(job_id: str) -> dict:
+    try:
+        job = pipeline.get_job(job_id)
+        net = job.network()
+        state = job.edit_log().state()
+        out = {"stats": net.get("stats", {}),
+               "recent_edits": [
+                   {"op": o.get("op"), "note": o.get("note", ""), "at": o.get("at")}
+                   for o in job.edit_log().ops[-8:]],
+               "n_dismissed_suggestions": len(state.dismissed)}
+        if job.has_truth():
+            out["score"] = job.score_network()
+        return _ok(**out)
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@mcp.tool(
+    description=(
+        "Find roads the network is probably still missing, to hand to the "
+        "person for review: 'gap' connectors between two dead ends that nearly "
+        "meet (usually right) and 'missed' stretches the model was unsure about "
+        "(roughly half are real). Returns locations; the person accepts or "
+        "dismisses them in the map's review mode."
+    )
+)
+def suggest_missing_roads(job_id: str, threshold: float = 0.25, limit: int = 30) -> dict:
+    try:
+        fc = pipeline.get_job(job_id).suggest(threshold=threshold, limit=limit)
+    except Exception as exc:
+        return _err(str(exc))
+    top = []
+    for f in fc["features"][:10]:
+        c = f["geometry"]["coordinates"]
+        mid = c[len(c) // 2]
+        top.append({**{k: f["properties"][k] for k in ("kind", "length_m", "confidence_pct")},
+                    "at": [round(mid[0], 5), round(mid[1], 5)]})
+    return _ok(**fc["stats"], top=top)
 
 
 @mcp.tool(

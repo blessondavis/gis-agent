@@ -374,6 +374,92 @@ a.small:hover { text-decoration: underline; }
 }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend i.dash {
+  background: repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 7px);
+}
+
+/* ------------------------------------------------------------ edit tools -- */
+
+.tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tools .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.tools button.icon { font-size: 15px; line-height: 1; padding: 4px 9px; }
+.tools button[aria-pressed="true"] {
+  background: rgba(185, 168, 255, .16);
+  border-color: #b9a8ff;
+  color: var(--text);
+}
+kbd {
+  font: 600 10px var(--mono);
+  color: var(--text-3);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+}
+button[aria-pressed="true"] kbd { color: #b9a8ff; border-color: rgba(185,168,255,.5); }
+
+.mapwrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.mapwrap #map { flex: 1; }
+
+.editbar {
+  position: absolute;
+  top: 12px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 800;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  max-width: calc(100% - 120px);
+  padding: 8px 10px 8px 14px;
+  background: rgba(15, 17, 20, .94);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  backdrop-filter: blur(6px);
+}
+.editbar[hidden] { display: none; }
+.editbar .note { color: var(--text-2); font-size: 12px; }
+.editbar .tag {
+  font: 600 10.5px var(--sans);
+  border-radius: 999px; padding: 3px 9px;
+  border: 1px solid currentColor;
+}
+.editbar .tag.gap { color: #4fe3e8; }
+.editbar .tag.missed { color: #ff8fd8; }
+
+.mapnote.floating {
+  position: absolute; left: 12px; bottom: 12px; z-index: 800;
+  padding: 6px 10px; border-radius: var(--radius-sm);
+  background: rgba(15, 17, 20, .9); border: 1px solid var(--line);
+}
+.mapnote.floating:empty { display: none; }
+
+body[data-edit="draw"] #map,
+body[data-edit="draw"] .leaflet-interactive { cursor: crosshair !important; }
+body[data-edit="delete"] .leaflet-interactive { cursor: not-allowed !important; }
+
+/* vertex handles for reshaping */
+.vx {
+  background: #0f1114;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(0,0,0,.5);
+  cursor: grab;
+}
+.vx.mid { background: #b9a8ff; border-width: 1.5px; opacity: .8; }
+.vx:hover { transform: scale(1.25); }
+
+/* completion: who built how much of the network */
+.splitbar {
+  display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--panel-2); margin: 2px 0 10px; gap: 2px;
+}
+.splitbar .model { background: var(--vec); }
+.splitbar .human { background: #b9a8ff; }
+#comp-score { margin-top: 10px; display: grid; gap: 8px; }
+.comp .v { font: 700 18px var(--sans); color: var(--text); }
+.comp .v .up { color: var(--ok); font-size: 12px; }
+.comp .v .down { color: var(--bad); font-size: 12px; }
+.comp .k { color: var(--text-3); font-size: 11px; }
 
 /* ----------------------------------------------------------------- agent -- */
 
@@ -416,6 +502,10 @@ a.small:hover { text-decoration: underline; }
   gap: 8px;
   min-height: 0;
 }
+/* A scrolling flex column shrinks its children once they overflow, and a
+   child with overflow:hidden (the step cards) has no minimum height, so every
+   card collapsed to its 2 px border. Items keep their size; the log scrolls. */
+#chatlog > * { flex-shrink: 0; }
 
 .msg {
   padding: 10px 12px;
@@ -427,6 +517,13 @@ a.small:hover { text-decoration: underline; }
 }
 .msg.user { background: var(--raised); align-self: flex-end; max-width: 88%; }
 .msg.bot  { background: var(--panel); border: 1px solid var(--line-soft); }
+.msg.md { white-space: normal; }
+.msg.md strong { color: var(--text); font-weight: 650; }
+.msg.md code { font: 11.5px var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.msg.md ul { margin: 4px 0; padding-left: 18px; }
+.msg.md li { margin: 2px 0; }
+.msg.md .md-h { font-weight: 650; color: var(--text); margin-top: 4px; }
+.msg.md .md-gap { height: 7px; }
 
 /* A run is 20-40 tool calls. Collapsed groups keep the interesting moments
    (a score changing, a self-correction) from drowning in routine ones. */
@@ -499,6 +596,67 @@ a.small:hover { text-decoration: underline; }
 .delta .arrow { color: var(--text-3); }
 .delta .to.up { color: var(--ok); }
 .delta .to.down { color: var(--bad); }
+
+/* ---------------------------------------------------- harness: plan etc -- */
+
+.planbox {
+  margin: 0 14px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid #b9a8ff;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+}
+.planbox[hidden] { display: none; }
+.plan-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+.planbox ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.planbox li { display: flex; gap: 8px; font-size: 12px; color: var(--text-2); line-height: 1.4; }
+.planbox li .ic { width: 12px; flex: 0 0 auto; color: var(--text-3); }
+.planbox li.in_progress { color: var(--text); }
+.planbox li.in_progress .ic { color: #b9a8ff; animation: pulse 1.1s ease-in-out infinite; }
+.planbox li.done { color: var(--text-3); }
+.planbox li.done .ic { color: var(--ok); }
+.planbox li.skipped { color: var(--text-3); text-decoration: line-through; }
+
+.narration { color: var(--text-3); font-size: 12px; line-height: 1.5; padding: 0 2px; }
+.msg.user { position: relative; padding-right: 30px; }
+.msg .rewind {
+  position: absolute; top: 6px; right: 6px;
+  padding: 1px 6px; font-size: 12px; line-height: 1.4;
+  background: transparent; color: var(--text-3); border: 1px solid transparent;
+  opacity: 0; transition: opacity .12s ease;
+}
+.msg.user:hover .rewind { opacity: 1; }
+.msg .rewind:hover { color: var(--text); border-color: var(--line); }
+
+.approve {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: rgba(185, 168, 255, .08); border: 1px solid rgba(185, 168, 255, .35);
+  font-size: 12px; color: var(--text-2);
+}
+.approve span { flex: 1 1 100%; }
+
+.step > summary b { color: var(--text); font-weight: 600; }
+.step .argline, .step .sumtext {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.step .spinner { width: 10px; height: 10px; flex: 0 0 auto; }
+.step[data-kind="work"] > summary::before { display: none; }
+.step[data-kind="edit"] > summary::before { background: #b9a8ff; }
+.step[data-kind="think"] { background: transparent; border-style: dashed; }
+.step[data-kind="think"] > summary { color: var(--text-3); }
+.step[data-kind="think"] .body { font-family: var(--sans); }
+.step .tag.ok { background: rgba(74, 222, 128, .14); color: var(--ok); }
+
+#send.stop { background: var(--bad); color: #1a0606; }
+
+.planfirst {
+  display: flex; align-items: center; gap: 7px; margin-top: 8px;
+  color: var(--text-3); font-size: 11.5px; cursor: pointer;
+}
+.planfirst input { accent-color: #b9a8ff; }
 
 .chat-input { padding: 10px 14px 14px; border-top: 1px solid var(--line-soft); flex: 0 0 auto; }
 

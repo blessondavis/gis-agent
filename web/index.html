@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gis-agent - road annotation workspace</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/vendor/leaflet.css">
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -69,27 +70,51 @@
     </div>
 
     <div class="block">
+      <h2>Completion <span class="right" id="comp-note"></span></h2>
+      <div id="completion"><p class="empty">no network yet</p></div>
+    </div>
+
+    <div class="block">
       <h2>Extracted network</h2>
       <div class="card"><dl class="kv" id="vecstats">
         <dt>status</dt><dd class="dimtext">none yet</dd></dl></div>
-      <a id="download" href="#" download class="small" style="display:none;margin-top:8px;display:none">
-        Download GeoJSON</a>
+      <a id="download" href="#" download class="small" style="display:none;margin-top:8px"
+         title="The model's roads with your edits applied">Download network (GeoJSON)</a>
     </div>
   </aside>
 
   <!-- ================= CENTER: map ================= -->
   <section class="col center">
     <div class="maptools">
-      <button id="btn-pick" class="ghost sm">Select area to rework</button>
+      <div class="tools" role="toolbar" aria-label="Edit the road network">
+        <button class="ghost sm" data-tool="draw" aria-pressed="false"
+                title="Draw a road the model missed. Vertices snap to existing roads.">Draw road <kbd>D</kbd></button>
+        <button class="ghost sm" data-tool="select" aria-pressed="false"
+                title="Drag a road's vertices to fix its shape">Reshape <kbd>V</kbd></button>
+        <button class="ghost sm" data-tool="delete" aria-pressed="false"
+                title="Click a false road to remove it">Delete <kbd>X</kbd></button>
+        <button class="ghost sm" data-tool="review" aria-pressed="false"
+                title="Step through roads the model probably missed: accept or dismiss each">Review suggestions <kbd>R</kbd></button>
+        <span class="sep"></span>
+        <button class="ghost sm icon" id="btn-undo" title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;</button>
+        <button class="ghost sm icon" id="btn-redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">&#8631;</button>
+      </div>
+      <div class="grow"></div>
+      <button id="btn-pick" class="ghost sm">Rework area with agent</button>
       <button id="btn-clearpick" class="ghost sm" style="display:none">Clear</button>
-      <div class="grow mapnote" id="mapnote">Drag a box on the map, then tell the agent what is wrong there.</div>
     </div>
-    <div id="map"></div>
+    <div class="mapwrap">
+      <div id="map"></div>
+      <div id="editbar" class="editbar" hidden></div>
+      <div class="mapnote floating" id="mapnote"></div>
+    </div>
     <div class="legend">
-      <span><i style="background:var(--vec)"></i> centreline (opacity = confidence)</span>
-      <span><i style="background:var(--road)"></i> predicted road mask</span>
+      <span><i style="background:var(--vec)"></i> model centreline (opacity = confidence)</span>
+      <span><i style="background:#b9a8ff"></i> drawn by you</span>
+      <span><i class="dash" style="--c:#4fe3e8"></i> suggested gap</span>
+      <span><i class="dash" style="--c:#ff8fd8"></i> possible road</span>
+      <span><i style="background:var(--road)"></i> predicted mask</span>
       <span><i style="background:var(--truth)"></i> ground truth</span>
-      <span><i style="background:#4c9aff"></i> selected area</span>
     </div>
   </section>
 
@@ -102,6 +127,8 @@
       <button id="btn-reset" class="ghost sm" title="clear the conversation">Reset</button>
     </div>
 
+    <div id="planbox" class="planbox" hidden></div>
+
     <div id="chatlog">
       <p class="empty">Create or pick a region, then ask the agent to annotate it.</p>
     </div>
@@ -112,6 +139,8 @@
         <textarea id="msg" rows="1" placeholder="Ask the agent... e.g. 'annotate the roads in this region'"></textarea>
         <button id="send">Send</button>
       </div>
+      <label class="planfirst" title="The agent may only look and measure, then proposes a plan. Nothing changes until you approve it.">
+        <input type="checkbox" id="planfirst"> Plan first, run after I approve</label>
     </div>
   </aside>
 </div>
