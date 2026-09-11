@@ -33,6 +33,10 @@ class TrainConfig:
     seed: int = 0
     amp: bool = True
     num_workers: int = 0          # Windows: worker startup costs more than it saves
+    # fine-tuning
+    init_checkpoint: str = ""     # start from these weights instead of ImageNet
+    checkpoint_name: str = "unet_roads.pt"
+    extra_share: float = 0.5      # share of training crops drawn from the extra source
 
 
 @dataclass
@@ -45,6 +49,8 @@ class EpochRecord:
     val_recall: float
     seconds: float
     best: bool = False
+    val_iou_extra: float | None = None     # the fine-tuning domain, when there is one
+    val_f1_extra: float | None = None
 
 
 @dataclass
@@ -78,6 +84,40 @@ def _metrics(prob: "np.ndarray", truth: "np.ndarray", thr: float = 0.5) -> dict:
     }
 
 
+def split_pairs(pairs: list, val_split: float = 0.15, seed: int = 0) -> tuple[list, list]:
+    """The deterministic train/val split. Shared with evaluation, so a model is
+    only ever scored on tiles it did not train on."""
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(pairs))
+    n_val = max(1, int(len(pairs) * val_split))
+    return [pairs[i] for i in order[n_val:]], [pairs[i] for i in order[:n_val]]
+
+
+def _validate(model, dl, device: str, use_amp: bool) -> dict:
+    import torch
+
+    model.eval()
+    tp = fp = fn = 0.0
+    with torch.no_grad():
+        for x, y in dl:
+            x = x.to(device)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                prob = torch.sigmoid(model(x)).float().cpu()
+            pred = prob > 0.5
+            t = y > 0.5
+            tp += float((pred & t).sum())
+            fp += float((pred & ~t).sum())
+            fn += float((~pred & t).sum())
+    prec = tp / max(tp + fp, 1e-9)
+    rec = tp / max(tp + fn, 1e-9)
+    return {
+        "iou": tp / max(tp + fp + fn, 1e-9),
+        "f1": 2 * prec * rec / max(prec + rec, 1e-9),
+        "precision": prec,
+        "recall": rec,
+    }
+
+
 def train(
     sat_dir: Path,
     map_dir: Path,
@@ -86,7 +126,17 @@ def train(
     *,
     device: str | None = None,
     progress=None,
+    extra_train: list | None = None,
+    extra_val: list | None = None,
 ) -> TrainReport:
+    """Train (or, with ``init_checkpoint``, fine-tune) the road U-Net.
+
+    ``extra_train`` / ``extra_val`` are TilePairs from a second dataset. When
+    given, ``extra_share`` of the training crops come from it and the rest
+    from the original tiles, and the best epoch is chosen on the *mean* of the
+    two validation IoUs -- so a gain on the new domain cannot hide a loss on
+    the old one.
+    """
     import segmentation_models_pytorch as smp
     import torch
     from torch.utils.data import DataLoader
@@ -105,15 +155,20 @@ def train(
             f"need at least 4 tile pairs to train, found {len(pairs)} in {sat_dir}"
         )
 
-    rng = np.random.default_rng(cfg.seed)
-    order = rng.permutation(len(pairs))
-    n_val = max(1, int(len(pairs) * cfg.val_split))
-    val_pairs = [pairs[i] for i in order[:n_val]]
-    train_pairs = [pairs[i] for i in order[n_val:]]
+    train_pairs, val_pairs = split_pairs(pairs, cfg.val_split, cfg.seed)
+
+    weights = None
+    all_train = list(train_pairs)
+    if extra_train:
+        share = min(max(cfg.extra_share, 0.0), 1.0)
+        weights = ([(1 - share) / len(train_pairs)] * len(train_pairs)
+                   + [share / len(extra_train)] * len(extra_train))
+        all_train += list(extra_train)
 
     train_ds = MassRoadsCrops(
-        train_pairs, crop=cfg.crop,
+        all_train, crop=cfg.crop,
         length=cfg.steps_per_epoch * cfg.batch_size, seed=cfg.seed,
+        weights=weights,
     )
     val_ds = TileWindows(val_pairs, crop=cfg.crop)
 
@@ -121,13 +176,26 @@ def train(
                           num_workers=cfg.num_workers, drop_last=True)
     val_dl = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False,
                         num_workers=cfg.num_workers)
+    extra_dl = None
+    if extra_val:
+        extra_dl = DataLoader(TileWindows(list(extra_val), crop=cfg.crop),
+                              batch_size=cfg.batch_size, shuffle=False,
+                              num_workers=cfg.num_workers)
 
+    encoder = cfg.encoder
+    init = None
+    if cfg.init_checkpoint:
+        init = torch.load(cfg.init_checkpoint, map_location="cpu", weights_only=False)
+        encoder = init.get("encoder", encoder)
     model = smp.Unet(
-        encoder_name=cfg.encoder,
-        encoder_weights="imagenet",
+        encoder_name=encoder,
+        encoder_weights=None if init else "imagenet",
         in_channels=3,
         classes=1,
-    ).to(device)
+    )
+    if init:
+        model.load_state_dict(init["state_dict"])
+    model = model.to(device)
 
     # Roads are a few percent of pixels. Plain BCE happily predicts all
     # background; Dice pushes back on that directly.
@@ -142,10 +210,10 @@ def train(
 
     report = TrainReport(
         config=asdict(cfg),
-        n_train_tiles=len(train_pairs),
-        n_val_tiles=len(val_pairs),
+        n_train_tiles=len(all_train),
+        n_val_tiles=len(val_pairs) + len(extra_val or []),
     )
-    ckpt = out_dir / "unet_roads.pt"
+    ckpt = out_dir / cfg.checkpoint_name
     t_start = time.perf_counter()
 
     for epoch in range(1, cfg.epochs + 1):
@@ -166,38 +234,24 @@ def train(
         sched.step()
         train_loss = total / max(len(train_dl), 1)
 
-        model.eval()
-        tp = fp = fn = 0.0
-        with torch.no_grad():
-            for x, y in val_dl:
-                x = x.to(device)
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    prob = torch.sigmoid(model(x)).float().cpu()
-                pred = prob > 0.5
-                t = y > 0.5
-                tp += float((pred & t).sum())
-                fp += float((pred & ~t).sum())
-                fn += float((~pred & t).sum())
-        prec = tp / max(tp + fp, 1e-9)
-        rec = tp / max(tp + fn, 1e-9)
-        rec_ = {
-            "iou": tp / max(tp + fp + fn, 1e-9),
-            "f1": 2 * prec * rec / max(prec + rec, 1e-9),
-            "precision": prec,
-            "recall": rec,
-        }
+        rec_ = _validate(model, val_dl, device, use_amp)
+        ext = _validate(model, extra_dl, device, use_amp) if extra_dl else None
+        # with two domains, select on their mean so neither can be sacrificed
+        score = (rec_["iou"] + ext["iou"]) / 2 if ext else rec_["iou"]
 
-        best = rec_["iou"] > report.best_iou
+        best = score > report.best_iou
         if best:
-            report.best_iou = rec_["iou"]
+            report.best_iou = score
             report.best_epoch = epoch
             torch.save(
                 {
                     "state_dict": model.state_dict(),
-                    "encoder": cfg.encoder,
+                    "encoder": encoder,
                     "crop": cfg.crop,
                     "val_iou": rec_["iou"],
+                    "val_iou_extra": ext["iou"] if ext else None,
                     "epoch": epoch,
+                    "init_checkpoint": cfg.init_checkpoint,
                 },
                 ckpt,
             )
@@ -207,6 +261,8 @@ def train(
             val_f1=rec_["f1"], val_precision=rec_["precision"],
             val_recall=rec_["recall"], seconds=time.perf_counter() - t0,
             best=best,
+            val_iou_extra=ext["iou"] if ext else None,
+            val_f1_extra=ext["f1"] if ext else None,
         )
         report.epochs.append(asdict(row))
         if progress:
@@ -214,5 +270,7 @@ def train(
 
     report.total_seconds = time.perf_counter() - t_start
     report.checkpoint = str(ckpt)
-    (out_dir / "train_report.json").write_text(json.dumps(report.to_dict(), indent=2))
+    name = ("train_report.json" if cfg.checkpoint_name == "unet_roads.pt"
+            else f"{Path(cfg.checkpoint_name).stem}_report.json")
+    (out_dir / name).write_text(json.dumps(report.to_dict(), indent=2))
     return report

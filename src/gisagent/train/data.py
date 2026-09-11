@@ -32,12 +32,18 @@ class TilePair:
     label: Path
 
     @staticmethod
-    def discover(sat_dir: Path, map_dir: Path) -> list["TilePair"]:
+    def discover(sat_dir: Path, map_dir: Path,
+                 ids: set[str] | None = None) -> list["TilePair"]:
+        """Pair images with same-named labels. GeoTIFF or PNG; the model only
+        needs pixels, so un-georeferenced datasets train just as well."""
         pairs = []
-        for img in sorted(Path(sat_dir).glob("*.tif")):
-            lbl = Path(map_dir) / img.name
-            if lbl.exists():
-                pairs.append(TilePair(img, lbl))
+        for pattern in ("*.tif", "*.png"):
+            for img in sorted(Path(sat_dir).glob(pattern)):
+                if ids is not None and img.stem not in ids:
+                    continue
+                lbl = Path(map_dir) / img.name
+                if lbl.exists():
+                    pairs.append(TilePair(img, lbl))
         return pairs
 
 
@@ -63,15 +69,22 @@ class MassRoadsCrops(Dataset):
         road_bias: float = 0.85,
         tries: int = 12,
         seed: int = 0,
+        weights: list[float] | None = None,
     ) -> None:
         if not pairs:
             raise ValueError("no tile pairs given")
+        if weights is not None and len(weights) != len(pairs):
+            raise ValueError("one sampling weight per tile pair")
         self.crop = crop
         self.length = length
         self.augment = augment
         self.road_bias = road_bias
         self.tries = tries
         self.rng = random.Random(seed)
+        # Per-tile sampling weights. Fine-tuning mixes two datasets of very
+        # different sizes; weighting keeps the original domain in every batch
+        # so the model does not forget it while learning the new one.
+        self.weights = weights
 
         self.images: list[np.ndarray] = []
         self.masks: list[np.ndarray] = []
@@ -86,11 +99,16 @@ class MassRoadsCrops(Dataset):
     def __len__(self) -> int:
         return self.length
 
+    def _pick(self) -> int:
+        if self.weights is None:
+            return self.rng.randrange(len(self.images))
+        return self.rng.choices(range(len(self.images)), weights=self.weights)[0]
+
     def _window(self, idx: int) -> tuple[int, int, int]:
         """Choose (tile, row, col), preferring windows that contain road."""
         want_road = self.rng.random() < self.road_bias
         for _ in range(self.tries):
-            t = self.rng.randrange(len(self.images))
+            t = self._pick()
             _, h, w = self.images[t].shape
             if h <= self.crop or w <= self.crop:
                 continue
@@ -106,7 +124,7 @@ class MassRoadsCrops(Dataset):
             return t, r, c
 
         # give up on the constraints rather than loop forever
-        t = self.rng.randrange(len(self.images))
+        t = self._pick()
         _, h, w = self.images[t].shape
         return (t, self.rng.randrange(max(h - self.crop, 1)),
                 self.rng.randrange(max(w - self.crop, 1)))

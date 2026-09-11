@@ -264,13 +264,29 @@ def train(
     data_dir: str = typer.Option("data/train_set"),
     out_dir: str = typer.Option("models"),
     skip_fetch: bool = typer.Option(False, help="reuse tiles already on disk"),
+    init: str = typer.Option("", help="fine-tune from this checkpoint instead of ImageNet"),
+    extra_data: str = typer.Option("", help="second dataset (sat/, map/, manifest.json)"),
+    extra_share: float = typer.Option(0.5, help="share of crops from the second dataset"),
+    out_name: str = typer.Option("unet_roads.pt", help="checkpoint file name"),
 ) -> None:
-    """Train a U-Net road segmenter on the Massachusetts Roads labels."""
+    """Train a U-Net road segmenter on the Massachusetts Roads labels.
+
+    With --init and --extra-data it fine-tunes instead: training crops are
+    mixed from both datasets and the best epoch is chosen on the mean of the
+    two validation IoUs, so the new domain cannot be learned at the old one's
+    expense.
+    """
     from gisagent.train.fetch import fetch_training_set
     from gisagent.train.loop import TrainConfig, train as run_train
 
     settings = get_settings()
     data = Path(data_dir)
+    extra_train = extra_val = None
+    if extra_data:
+        extra_train = _manifest_pairs(Path(extra_data), "ft_train")
+        extra_val = _manifest_pairs(Path(extra_data), "ft_val")
+        console.print(f"second dataset: {len(extra_train)} train / "
+                      f"{len(extra_val)} val tiles, {extra_share:.0%} of crops")
 
     if not skip_fetch:
         with console.status(f"assembling a {tiles}-tile training set..."):
@@ -281,16 +297,20 @@ def train(
         console.print(rep.to_dict())
 
     cfg = TrainConfig(encoder=encoder, crop=crop, batch_size=batch_size,
-                      epochs=epochs, steps_per_epoch=steps, lr=lr)
+                      epochs=epochs, steps_per_epoch=steps, lr=lr,
+                      init_checkpoint=init, checkpoint_name=out_name,
+                      extra_share=extra_share)
 
     table = Table("ep", "loss", "val IoU", "val F1", "prec", "rec", "s")
 
     def on_epoch(row) -> None:
         mark = " *" if row.best else ""
+        extra = (f"  | 2nd dataset IoU {row.val_iou_extra:.4f}"
+                 if row.val_iou_extra is not None else "")
         console.print(
             f"  epoch {row.epoch:>2}  loss {row.train_loss:.4f}  "
             f"IoU {row.val_iou:.4f}  F1 {row.val_f1:.4f}  "
-            f"P {row.val_precision:.3f}  R {row.val_recall:.3f}  "
+            f"P {row.val_precision:.3f}  R {row.val_recall:.3f}{extra}  "
             f"{row.seconds:.0f}s{mark}",
             highlight=False,
         )
@@ -300,7 +320,8 @@ def train(
                       f"{row.seconds:.0f}")
 
     report = run_train(data / "sat", data / "map", Path(out_dir), cfg,
-                       progress=on_epoch)
+                       progress=on_epoch, extra_train=extra_train,
+                       extra_val=extra_val)
 
     console.print(table)
     console.print(
@@ -310,6 +331,74 @@ def train(
     console.print(f"trained on {report.n_train_tiles} tiles, "
                   f"validated on {report.n_val_tiles}, "
                   f"{report.total_seconds/60:.1f} min")
+
+
+def _manifest_pairs(root: Path, set_name: str) -> list:
+    """Tile pairs of one set (ood / ft_train / ft_val / id_test) of a dataset
+    prepared with a manifest.json listing {id, set} per region."""
+    import json as _json
+
+    from gisagent.train.data import TilePair
+
+    raw = _json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    regions = raw.get("regions", raw) if isinstance(raw, dict) else raw
+    ids = {str(r["id"]) for r in regions if r.get("set") == set_name}
+    return TilePair.discover(root / "sat", root / "map", ids=ids)
+
+
+@app.command("evaluate-tiles")
+def evaluate_tiles_cmd(
+    checkpoint: list[str] = typer.Option(["models/unet_roads.pt"],
+                                         help="one or more; compared side by side"),
+    mass_val: bool = typer.Option(False, help="the Massachusetts validation tiles "
+                                              "the model never trained on"),
+    data: str = typer.Option("", help="a prepared dataset (sat/, map/, manifest.json)"),
+    subset: list[str] = typer.Option([], "--set", help="manifest set(s) to score, e.g. ood"),
+    limit: int = typer.Option(0, help="score only the first N tiles of each set"),
+    out: str = typer.Option("", help="write the full report as JSON"),
+) -> None:
+    """Score checkpoints on held-out tiles: pixel, relaxed and centreline metrics.
+
+    Centreline completeness/correctness compare skeletons by length, so they
+    are fair across datasets whose labels are drawn at different widths.
+    """
+    import json as _json
+
+    from gisagent.evaluate.tiles import evaluate_tiles
+    from gisagent.segment.unet import UNetRoadSegmenter
+    from gisagent.train.data import TilePair
+    from gisagent.train.loop import split_pairs
+
+    sets: dict[str, list] = {}
+    if mass_val:
+        pairs = TilePair.discover(Path("data/train_set/sat"), Path("data/train_set/map"))
+        sets["mass_val"] = split_pairs(pairs)[1]
+    for s in subset:
+        sets[s] = _manifest_pairs(Path(data), s)
+    if limit:
+        sets = {k: v[:limit] for k, v in sets.items()}
+    if not sets:
+        raise typer.BadParameter("nothing to score: pass --mass-val and/or --data with --set")
+
+    report: dict = {}
+    table = Table("set", "model", "tiles", "IoU", "F1", "relaxed F1",
+                  "completeness", "correctness", "centreline F1")
+    for ck in checkpoint:
+        seg = UNetRoadSegmenter(ck)
+        seg.load()
+        for name, pairs in sets.items():
+            with console.status(f"{Path(ck).stem} on {name} ({len(pairs)} tiles)..."):
+                r = evaluate_tiles(seg._predict, pairs)
+            report.setdefault(name, {})[Path(ck).stem] = r
+            table.add_row(name, Path(ck).stem, str(r["n_tiles"]), f"{r['iou']:.3f}",
+                          f"{r['f1']:.3f}", f"{r['relaxed_f1']:.3f}",
+                          f"{r['completeness']:.3f}", f"{r['correctness']:.3f}",
+                          f"{r['centreline_f1']:.3f}")
+        seg.unload()
+    console.print(table)
+    if out:
+        Path(out).write_text(_json.dumps(report, indent=1), encoding="utf-8")
+        console.print(f"report -> {out}")
 
 
 @app.command()
@@ -386,6 +475,79 @@ def serve(
     import uvicorn
 
     uvicorn.run("gisagent.api.app:app", host=host, port=port, reload=reload)
+
+
+@app.command("agent")
+def agent_turn(
+    job_id: str = typer.Argument(..., help="job to work on"),
+    message: str = typer.Argument(..., help="what to ask the agent"),
+    plan: bool = typer.Option(False, "--plan", help="read-only: propose a plan, change nothing"),
+    as_json: bool = typer.Option(False, "--json", help="stream events as JSON lines"),
+    max_steps: int = typer.Option(0, help="step budget (0 = configured default)"),
+) -> None:
+    """Run one agent turn headless, for scripts and CI.
+
+    Same harness as the web app -- plan, stop gate, checkpoint -- with the
+    trace on stdout. --json emits one event per line, like `grok -p`.
+    """
+    import asyncio
+    import json as _json
+    import sys
+
+    from rich.markup import escape
+
+    from gisagent import mcp_client
+    from gisagent.agent.loop import Conversation, RoadAgent
+    from gisagent.checkpoints import Checkpoints
+    from gisagent.pipeline import get_job
+
+    # Model text is arbitrary Unicode; a legacy Windows console (cp1252) must
+    # degrade a character it lacks rather than crash the run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+    job = get_job(job_id)
+    convo = Conversation(job.dir / "conversation.json")
+    cps = Checkpoints(job.dir)
+
+    async def _run() -> int:
+        cps.begin(message, len(convo.messages))
+        agent = RoadAgent(max_steps=max_steps or None)
+        code = 0
+        try:
+            async for ev in agent.chat(convo, message, job_id=job_id,
+                                       mode="plan" if plan else "work"):
+                d = ev.to_dict()
+                if as_json:
+                    print(_json.dumps(d, default=str), flush=True)
+                    continue
+                # everything the model or a tool wrote is escaped: "[x]" in
+                # model text is content, not Rich markup
+                if ev.type == "tool_call":
+                    console.print(f"[dim]->[/] [bold]{escape(ev.tool)}[/] "
+                                  f"[dim]{escape(_json.dumps(ev.args)[:120])}[/]")
+                elif ev.type == "tool_result":
+                    mark = "[green]ok[/]" if ev.ok else "[red]failed[/]"
+                    console.print(f"   {mark} {escape(ev.summary)} [dim]{ev.duration_s:.1f}s[/]")
+                elif ev.type == "plan":
+                    for s in ev.result["steps"]:
+                        console.print(f"   [cyan]{escape('[' + s['status'] + ']')}[/] "
+                                      f"{escape(s['title'])}")
+                elif ev.type == "verify":
+                    colour = "green" if ev.ok else "yellow"
+                    console.print(f"[{colour}]verify:[/] {escape(ev.text)}")
+                elif ev.type in ("thinking", "message"):
+                    console.print(ev.text, markup=False, highlight=False)
+                elif ev.type == "error":
+                    console.print(f"[red]{escape(ev.text)}[/]")
+                    code = 1
+            return code
+        finally:
+            cps.end()
+            await mcp_client.shutdown()
+
+    raise typer.Exit(asyncio.run(_run()))
 
 
 @app.command("mcp")
